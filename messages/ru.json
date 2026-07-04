@@ -1,0 +1,14 @@
+{
+  "shell": { "appName": "U-Pal" },
+  "auth": {
+    "getCode": "Получить код",
+    "signIn": "Войти",
+    "emailPlaceholder": "email",
+    "codePlaceholder": "код из письма"
+  },
+  "hq": { "title": "Штаб" },
+  "home": {
+    "tagline": "Назови свой экзамен — получи штаб подготовки",
+    "cta": "Начать"
+  }
+}

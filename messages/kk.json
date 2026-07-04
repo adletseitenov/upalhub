@@ -1,0 +1,14 @@
+{
+  "shell": { "appName": "U-Pal" },
+  "auth": {
+    "getCode": "Код алу",
+    "signIn": "Кіру",
+    "emailPlaceholder": "email",
+    "codePlaceholder": "хаттағы код"
+  },
+  "hq": { "title": "Штаб" },
+  "home": {
+    "tagline": "Емтиханыңды ата — дайындық штабын ал",
+    "cta": "Бастау"
+  }
+}
