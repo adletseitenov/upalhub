@@ -4,9 +4,9 @@
 
 **Goal:** Работающий MVP U-Pal — экзамен-агностик платформа: пользователь называет любой экзамен → AI исследует его в интернете → профиль экзамена → штаб (план, тесты в формате экзамена, карта знаний, прогноз, отчёт родителю) + открытая библиотека профилей и хабов + запись всех данных под скоринг.
 
-**Architecture:** Next.js-монолит (App Router) поверх Supabase (Postgres + Auth + Storage), деплой Vercel. Вся AI-логика — за двумя адаптерами: `lib/llm` (провайдер LLM) и `lib/search` (веб-поиск), чтобы выбор OpenRouter/Claude API не трогал продуктовый код. Домен разложен по `src/features/*` — по одной фиче на директорию, тонкие route handlers.
+**Architecture:** Next.js-монолит (App Router) поверх Supabase (Postgres + Auth + Storage), деплой Vercel. Вся AI-логика — за двумя адаптерами: `lib/llm` (провайдер LLM) и `lib/search` (веб-поиск), чтобы смена провайдера не трогала продуктовый код. Домен разложен по `src/features/*` — по одной фиче на директорию, тонкие route handlers.
 
-**Tech Stack:** Next.js (TypeScript, App Router) · Tailwind · Supabase (Postgres, Auth, Storage) · Vercel · vitest + Playwright · zod · next-intl (RU/KZ) · LLM: OpenRouter **или** Anthropic API (см. Decision Points) · web search: Tavily/Serper **или** Anthropic web search tool.
+**Tech Stack:** Next.js (TypeScript, App Router) · Tailwind · Supabase (Postgres, Auth, Storage) · Vercel · vitest + Playwright · zod · next-intl (RU/KZ) · LLM: **OpenRouter** (решение основателя 2026-07-05: прямой Claude API не подключаем — экономия; модель через `LLM_MODEL`) · web search: Tavily/Serper.
 
 **Спека:** [../../product-plan.md](../../product-plan.md) — v2, экзамен-агностик.
 
@@ -24,8 +24,8 @@
 
 | Решение | Варианты | Срок |
 |---|---|---|
-| LLM-провайдер | OpenRouter (гибкость моделей, один API) vs Anthropic API (web search tool из коробки, prompt caching) | этап 0 (адаптер позволяет менять и позже) |
-| Web search | Tavily / Serper / Anthropic web search tool | этап 1 |
+| LLM-провайдер | **✅ Решено: OpenRouter** (прямой Claude API не подключаем — экономия). Открыто: какая модель (`LLM_MODEL`) — выбрать дешёвую при подключении ключа | этап 0 |
+| Web search | Tavily / Serper | этап 1 |
 | Прогретые экзамены (3–5) | кандидаты: ЕНТ, IELTS, DTM, НИШ/КТЛ | этап 1 |
 | Платёжный провайдер KZ | Kaspi Pay / Paybox / карта-эквайринг | этап 5 |
 | Бренд/домен | — | этап 5 |
@@ -59,7 +59,7 @@ upalhub/
       reports/                      # еженедельный отчёт родителю
       billing/                      # freemium-гейты, подписка
     lib/
-      llm/                          # интерфейс + провайдеры openrouter|anthropic + fake для тестов
+      llm/                          # интерфейс + провайдер openrouter + fake для тестов
       search/                       # интерфейс + tavily|serper|anthropic + fake
       supabase/                     # клиенты (server/browser), типы БД
       i18n/
@@ -204,11 +204,11 @@ RLS: ученик видит свои hq/attempts; родитель — данн
 
 | # | Задача | Deliverable / Acceptance |
 |---|---|---|
-| 0.1 | Scaffold: Next.js + TS + Tailwind + vitest + Playwright + lint/prettier; GitHub Actions (typecheck, lint, test); деплой Vercel | CI зелёный на пустом проекте; прод-URL открывается |
+| 0.1 | Scaffold: Next.js + TS + Tailwind + vitest + lint/prettier; GitHub Actions (typecheck, lint, test); деплой Vercel (Playwright e2e — с этапа 2, когда появятся флоу) | CI зелёный на пустом проекте; прод-URL открывается |
 | 0.2 | Supabase: проект, миграционный тулинг, Auth (email OTP + Google), таблица `profiles`, RLS-базис | Можно зарегистрироваться и войти; профиль создаётся триггером |
 | 0.3 | i18n-скелет (next-intl, RU/KZ), layout shell (навигация app-зоны, marketing-зоны) | Переключение RU↔KZ работает на всех страницах скелета |
 | 0.4 | Миграции ядра: все таблицы из схемы выше + типы БД в `lib/supabase` | `supabase db reset` проходит; типы генерируются |
-| 0.5 | Адаптеры `lib/llm` (openrouter + anthropic + fake) и `lib/search` (tavily + fake), конфиг через env | Юнит-тесты на fake; смена провайдера = смена env |
+| 0.5 | Адаптеры `lib/llm` (openrouter + fake) и `lib/search` (tavily + fake), конфиг через env | Юнит-тесты на fake; новый провайдер = один файл + ветка в фабрике |
 
 ## Этап 1 — Генератор профиля экзамена (2–3 нед) ← сердце продукта
 
