@@ -1,5 +1,10 @@
 # U-Pal Stage 0 — Foundation Implementation Plan
 
+> **СТАТУС 2026-07-05:** Tasks 1, 2, 6, 8, 9 — ✅ выполнены (CI зелёный, 20 тестов).
+> Офлайн-части Tasks 3, 4, 5, 7 — ✅ код написан: supabase-клиенты + env-guard + proxy (бывш. middleware), страницы /sign-in и /hq (i18n), обе SQL-миграции лежат в `supabase/migrations/`.
+> ⏸ Ждут доступов: `supabase login/link/db push/gen types` (Tasks 3–4, 7), e2e-проверка OTP (Task 5), Vercel-деплой (Task 10). Блокер: у основателя нет прав в организации Supabase «Foustie» — нужно создать свою организацию (Free) и проект; Vercel — личный Hobby-аккаунт.
+> Примечание: в Next 16 файл middleware переименован в `src/proxy.ts` (конвенция «proxy»).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Живое пустое приложение в проде: Next.js + Supabase, регистрация по email OTP, RU/KZ i18n, все таблицы ядра накатаны, LLM/search-адаптеры покрыты тестами, CI зелёный, деплой на Vercel.
