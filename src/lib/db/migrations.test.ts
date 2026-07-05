@@ -5,8 +5,11 @@ import { PGlite } from "@electric-sql/pglite";
 
 const MIGRATIONS_DIR = join(process.cwd(), "supabase", "migrations");
 
-// Заглушка supabase-окружения: схема auth и auth.uid(), которых нет в чистом Postgres.
+// Заглушка supabase-окружения: схема auth, auth.uid() и роли anon/authenticated,
+// которых нет в чистом Postgres, но которые Supabase создаёт на платформе.
 const SUPABASE_STUB = `
+  create role anon;
+  create role authenticated;
   create schema auth;
   create table auth.users (
     id uuid primary key,
@@ -73,7 +76,9 @@ describe("supabase migrations", () => {
     await db.exec(
       "insert into auth.users (id, email) values (gen_random_uuid(), 'student@example.com')",
     );
-    const res = await db.query<{ count: string }>("select count(*)::text as count from profiles");
+    const res = await db.query<{ count: string }>(
+      "select count(*)::text as count from profiles",
+    );
     expect(res.rows[0].count).toBe("1");
   });
 });
