@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "eval:profiles": "vitest run --config vitest.evals.config.ts"
+    "eval:profiles": "vitest run --config vitest.evals.config.ts",
+    "eval:tasks": "vitest run --config vitest.evals.config.ts evals/task-quality/"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.0",
