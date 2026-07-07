@@ -85,11 +85,14 @@ function budgetedLlm(llm: Llm, max: number): Llm {
 }
 
 /**
- * assembleTest (D3): buildPlan -> select банка по каждому бакету -> на
- * дефицит генерация (суммарно ≤3 фактических llm.complete на всю сборку,
- * считая через budgetedLlm, а не через число вызовов generateForBucket) ->
- * re-select -> distinct taskIds по секциям -> заморозка spec (снапшот
- * scoring на момент сборки, не ссылка) -> testRepo.insertTest.
+ * assembleTest (D3): buildPlan -> select банка по каждому бакету (exact
+ * difficulty=FIXED_DIFFICULTY) -> на недобор релакс-фолбэк select с
+ * difficulty=null (подхватывает импортированные/сгенерированные задания вне
+ * FIXED_DIFFICULTY, acceptance 2.5) -> на оставшийся дефицит генерация
+ * (суммарно ≤3 фактических llm.complete на всю сборку, считая через
+ * budgetedLlm, а не через число вызовов generateForBucket) -> re-select ->
+ * distinct taskIds по секциям -> заморозка spec (снапшот scoring на момент
+ * сборки, не ссылка) -> testRepo.insertTest.
  *
  * Исчерпание бюджета — не ошибка сборки: остаток бакетов просто не
  * генерируется (findBucket отдаёт что есть в банке, может быть меньше
@@ -116,6 +119,27 @@ export async function assembleTest(
       bucket.count,
     );
 
+    // Релакс-фолбэк (acceptance 2.5): точный select бьёт по FIXED_DIFFICULTY,
+    // поэтому импортированные/сгенерированные ранее задания с иной
+    // сложностью иначе никогда бы не выбирались. difficulty=null снимает
+    // фильтр по сложности в repo; уже отобранные exact-match id исключаем
+    // вручную (repo не умеет excludeIds) — фолбэк не должен задваивать их.
+    // Никакого бюджета LLM это не трогает — обычный select банка.
+    if (found.length < bucket.count) {
+      const takenIds = new Set(found.map((task) => task.id));
+      const fallback = await deps.taskRepo.findBucket(
+        examProfile.id,
+        bucket.type,
+        bucket.topic,
+        null,
+        bucket.count,
+      );
+      const fresh = fallback.filter((task) => !takenIds.has(task.id));
+      found = found.concat(fresh.slice(0, bucket.count - found.length));
+    }
+
+    // Только оставшийся дефицит (после точного select + релакс-фолбэка)
+    // идёт в генерацию.
     if (found.length < bucket.count && !budgetExhausted) {
       try {
         await generateForBucket({ llm, repo: deps.taskRepo }, spec, examProfile.id, bucket);
@@ -126,13 +150,16 @@ export async function assembleTest(
           throw err;
         }
       }
-      found = await deps.taskRepo.findBucket(
+      const takenIds = new Set(found.map((task) => task.id));
+      const afterGen = await deps.taskRepo.findBucket(
         examProfile.id,
         bucket.type,
         bucket.topic,
         bucket.difficulty,
         bucket.count,
       );
+      const fresh = afterGen.filter((task) => !takenIds.has(task.id));
+      found = found.concat(fresh.slice(0, bucket.count - found.length));
     }
 
     const existing = sectionTasks.get(bucket.sectionName) ?? [];

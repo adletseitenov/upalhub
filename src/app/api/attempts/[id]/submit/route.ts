@@ -9,22 +9,36 @@ import type { Database } from "@/lib/supabase/database.types";
 
 type TaskRow = Database["public"]["Tables"]["tasks"]["Row"];
 
-// Локальный эквивалент приватного rowToTask из tasks/repo.ts — тот не
+// Локальный эквивалент приватного rowToTaskSafe из tasks/repo.ts — тот не
 // экспортируется, а контракт repo.ts менять нельзя (бриф T6). Это ЕДИНСТВЕННЫЙ
 // роут, который видит answer — только на сервере, наружу answer не отдаётся
 // (submitAttempt возвращает только raw/scaled/total).
-function rowToStoredTask(row: TaskRow): StoredTask {
-  const body = taskBodySchema.parse(row.body);
-  const answer = taskAnswerSchema.parse(row.answer);
-  validateTaskPair(body, answer);
+//
+// safeParse, не .parse (D-fix3): одна мусорная строка банка не должна ронять
+// сабмит для остальных заданий попытки. Пропущенный (null) таск ниже
+// фильтруется — submitAttempt уже грейдит отсутствующий в `tasks` id как
+// isCorrect=false, так что пропуск здесь не меняет остальную сдачу попытки.
+function rowToStoredTask(row: TaskRow): StoredTask | null {
+  const bodyResult = taskBodySchema.safeParse(row.body);
+  const answerResult = taskAnswerSchema.safeParse(row.answer);
+  if (!bodyResult.success || !answerResult.success) {
+    console.warn(`attempts/submit: skipping malformed task row id=${row.id} (invalid body/answer shape)`);
+    return null;
+  }
+  try {
+    validateTaskPair(bodyResult.data, answerResult.data);
+  } catch {
+    console.warn(`attempts/submit: skipping malformed task row id=${row.id} (body/answer pair invalid)`);
+    return null;
+  }
   return {
     id: row.id,
     type: row.type,
     topic: row.topic,
     difficulty: row.difficulty,
     language: row.language,
-    body,
-    answer,
+    body: bodyResult.data,
+    answer: answerResult.data,
     explanation: row.explanation ?? "",
   };
 }
@@ -53,7 +67,9 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     .select("*")
     .in("id", test.spec.taskIds);
   if (tasksError) throw tasksError;
-  const tasks = (taskRows ?? []).map(rowToStoredTask);
+  const tasks = (taskRows ?? [])
+    .map(rowToStoredTask)
+    .filter((task): task is StoredTask => task !== null);
 
   const result = await submitAttempt(
     { repo: attemptRepo },

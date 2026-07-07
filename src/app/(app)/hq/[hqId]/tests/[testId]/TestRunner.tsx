@@ -54,6 +54,50 @@ function isAnswered(response: TaskResponse | undefined): boolean {
   }
 }
 
+// submitOnce/startOnce (D-fix4): сетевой запрос + try/catch живут в
+// module-level функциях, ВНЕ handleSubmit/handleStart — react-hooks'
+// set-state-in-effect консервативно считает любой catch внутри функции,
+// достижимой из useEffect (handleSubmit зовётся из авто-сабмита на дедлайн),
+// потенциально синхронным. Вынос try/catch в функцию, которая сама не
+// вызывает setState и не передаётся в effect напрямую, снимает false positive
+// — вызывающий код (handleSubmit/handleStart) просто ветвится по исходу.
+type SubmitOutcome =
+  | { kind: "success"; data: AttemptResult }
+  | { kind: "http_error" }
+  | { kind: "exception" };
+
+async function submitOnce(id: string, flushSave: () => Promise<void>): Promise<SubmitOutcome> {
+  try {
+    await flushSave();
+    const res = await fetch(`/api/attempts/${id}/submit`, { method: "POST" });
+    if (!res.ok) return { kind: "http_error" };
+    const data = (await res.json()) as AttemptResult & { alreadyFinished: boolean };
+    return { kind: "success", data: { raw: data.raw, scaled: data.scaled, total: data.total } };
+  } catch {
+    return { kind: "exception" };
+  }
+}
+
+type StartOutcome =
+  | { kind: "success"; attemptId: string; deadlineAt: string | null }
+  | { kind: "http_error" }
+  | { kind: "exception" };
+
+async function startOnce(testId: string): Promise<StartOutcome> {
+  try {
+    const res = await fetch("/api/attempts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ testId }),
+    });
+    if (!res.ok) return { kind: "http_error" };
+    const data = (await res.json()) as { attemptId: string; deadlineAt: string | null };
+    return { kind: "success", attemptId: data.attemptId, deadlineAt: data.deadlineAt };
+  } catch {
+    return { kind: "exception" };
+  }
+}
+
 export function TestRunner(props: TestRunnerProps) {
   const t = useTranslations("testRunner");
   const taskById = useMemo(() => new Map(props.tasks.map((task) => [task.id, task])), [props.tasks]);
@@ -75,6 +119,7 @@ export function TestRunner(props: TestRunnerProps) {
   const [starting, setStarting] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [savingState, setSavingState] = useState<"idle" | "saving" | "saved">("idle");
+  const [error, setError] = useState<string | null>(null);
 
   const responsesRef = useRef(responses);
   const attemptIdRef = useRef(attemptId);
@@ -178,19 +223,23 @@ export function TestRunner(props: TestRunnerProps) {
     const id = attemptIdRef.current;
     if (!id || submitting || finished) return;
     setSubmitting(true);
+    setError(null);
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = null;
     }
-    await flushSave();
-    const res = await fetch(`/api/attempts/${id}/submit`, { method: "POST" });
-    if (res.ok) {
-      const data = (await res.json()) as AttemptResult & { alreadyFinished: boolean };
-      setResult({ raw: data.raw, scaled: data.scaled, total: data.total });
+    const outcome = await submitOnce(id, flushSave);
+    if (outcome.kind === "success") {
+      setResult(outcome.data);
       setFinished(true);
+    } else if (outcome.kind === "exception") {
+      // Сетевой сбой/исключение (не HTTP-ошибка — та молча оставляет
+      // попытку незавершённой для ретрая): явно показываем ошибку, а не
+      // оставляем кнопку зависшей в disabled без обратной связи.
+      setError(t("error"));
     }
     setSubmitting(false);
-  }, [submitting, finished, flushSave]);
+  }, [submitting, finished, flushSave, t]);
 
   // Автосабмит при истечении дедлайна — без confirm, ровно один раз.
   useEffect(() => {
@@ -219,15 +268,13 @@ export function TestRunner(props: TestRunnerProps) {
 
   async function handleStart() {
     setStarting(true);
-    const res = await fetch("/api/attempts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ testId: props.testId }),
-    });
-    if (res.ok) {
-      const data = (await res.json()) as { attemptId: string; deadlineAt: string | null };
-      setAttemptId(data.attemptId);
-      setDeadlineAt(data.deadlineAt ? new Date(data.deadlineAt) : null);
+    setError(null);
+    const outcome = await startOnce(props.testId);
+    if (outcome.kind === "success") {
+      setAttemptId(outcome.attemptId);
+      setDeadlineAt(outcome.deadlineAt ? new Date(outcome.deadlineAt) : null);
+    } else if (outcome.kind === "exception") {
+      setError(t("error"));
     }
     setStarting(false);
   }
@@ -248,6 +295,7 @@ export function TestRunner(props: TestRunnerProps) {
         >
           {starting ? "…" : t("start")}
         </button>
+        {error && <p className="text-sm text-red-600">{error}</p>}
       </main>
     );
   }
@@ -390,6 +438,7 @@ export function TestRunner(props: TestRunnerProps) {
         >
           {t("submit")}
         </button>
+        {error && <p className="text-sm text-red-600">{error}</p>}
       </footer>
     </main>
   );

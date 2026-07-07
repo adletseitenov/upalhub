@@ -4,6 +4,7 @@ import type { ExamProfileSpec } from "@/features/exam-profile/spec";
 import type { StoredExamProfile } from "@/features/exam-profile/service";
 import type { NewTaskRow, StoredTask, TaskBankRepo } from "@/features/tasks/repo";
 import type { Bucket } from "@/features/tasks/generate";
+import { parseImport, importTasks } from "@/features/tasks/import";
 import { buildPlan, assembleTest } from "./assemble";
 import type { TestRepo, StoredTest } from "./repo";
 import type { TestKind } from "./spec";
@@ -147,7 +148,7 @@ function fakeTaskRepo(seed: InternalTaskRow[] = []): TaskBankRepo & { rows: Inte
             r.examProfileId === profileId &&
             r.type === type &&
             r.topic === topic &&
-            r.difficulty === difficulty,
+            (difficulty === null || r.difficulty === difficulty),
         )
         .slice(0, limit)
         .map(toStored);
@@ -520,6 +521,58 @@ describe("assembleTest", () => {
       );
 
       expect(result.spec.totalTimeMinutes).toBeNull();
+    });
+  });
+
+  // acceptance 2.5: импортированные задания (произвольная difficulty 1..5,
+  // не только FIXED_DIFFICULTY=3) должны быть достижимы для сборки без
+  // единого обращения к LLM — релакс-фолбэк findBucket(..., null, ...) в
+  // assembleTest подхватывает то, что точный exact-match select пропускает.
+  describe("imported tasks with non-fixed difficulty (acceptance 2.5)", () => {
+    it("assembles entirely from imported tasks spanning difficulty 1..5, with zero llm.complete calls", async () => {
+      const importFixture = [1, 2, 3, 4, 5].map((difficulty) => ({
+        type: "algebra",
+        topic: "Уравнения",
+        difficulty,
+        language: "kk",
+        body: scBody(`Импорт сложности ${difficulty}`),
+        answer: scAnswer(),
+        explanation: "explanation",
+      }));
+      const { valid, errors } = parseImport(importFixture);
+      expect(errors).toEqual([]);
+      expect(valid).toHaveLength(5);
+
+      const spec: ExamProfileSpec = {
+        ...minimalSpec,
+        sections: [
+          {
+            name: "Algebra",
+            taskCount: 5,
+            timeLimitMinutes: null,
+            taskTypes: ["algebra"],
+            topics: ["Уравнения"],
+          },
+        ],
+      };
+      const profile = examProfileFixture(spec, "profile-import");
+      const taskRepo = fakeTaskRepo();
+      await importTasks({ repo: taskRepo }, "profile-import", valid);
+      const importedIds = taskRepo.rows.map((r) => r.id);
+      expect(importedIds).toHaveLength(5);
+
+      const testRepo = fakeTestRepo();
+      const llm = fakeLlm([]);
+      const completeSpy = vi.spyOn(llm, "complete");
+
+      const result = await assembleTest(
+        { taskRepo, testRepo, llm },
+        { hqId: "hq-import", examProfile: profile, kind: "practice" },
+      );
+
+      expect(completeSpy).not.toHaveBeenCalled();
+      expect(result.spec.taskIds).toHaveLength(5);
+      expect(new Set(result.spec.taskIds)).toEqual(new Set(importedIds));
     });
   });
 });

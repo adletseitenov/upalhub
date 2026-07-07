@@ -13,26 +13,37 @@ export function StartTestButton({ hqId }: { hqId: string }) {
   const t = useTranslations("testRunner");
   const [busy, setBusy] = useState(false);
   const [rateLimited, setRateLimited] = useState(false);
+  const [error, setError] = useState(false);
 
   async function start() {
     setBusy(true);
     setRateLimited(false);
-    const res = await fetch("/api/tests", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ hqId, kind: "diagnostic" }),
-    });
-    if (res.status === 401) return router.push("/sign-in");
-    if (res.status === 429) {
-      setRateLimited(true);
+    setError(false);
+    try {
+      const res = await fetch("/api/tests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hqId, kind: "diagnostic" }),
+      });
+      // 401/ok оставляют busy=true (GeneratingState) до завершения навигации —
+      // setBusy(false) только на путях, где остаёмся на этой же странице.
+      if (res.status === 401) return router.push("/sign-in");
+      if (res.status === 429) {
+        setRateLimited(true);
+        setBusy(false);
+        return;
+      }
+      if (res.ok) {
+        const { testId } = (await res.json()) as { testId: string };
+        return router.push(`/hq/${hqId}/tests/${testId}`);
+      }
       setBusy(false);
-      return;
+    } catch {
+      // Сетевой сбой/исключение: не оставляем кнопку зависшей в
+      // GeneratingState — сбрасываем busy и показываем ошибку.
+      setError(true);
+      setBusy(false);
     }
-    if (res.ok) {
-      const { testId } = (await res.json()) as { testId: string };
-      return router.push(`/hq/${hqId}/tests/${testId}`);
-    }
-    setBusy(false);
   }
 
   if (busy) return <GeneratingState />;
@@ -43,6 +54,7 @@ export function StartTestButton({ hqId }: { hqId: string }) {
         {t("start")}
       </button>
       {rateLimited && <p className="text-sm text-red-600">{t("rateLimited")}</p>}
+      {error && <p className="text-sm text-red-600">{t("error")}</p>}
     </div>
   );
 }

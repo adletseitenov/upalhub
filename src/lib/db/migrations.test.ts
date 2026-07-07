@@ -97,6 +97,18 @@ describe("supabase migrations", () => {
     );
   });
 
+  it("tightens tasks insert RLS to profile-creator and ai-origin-only policies", async () => {
+    const res = await db.query<{ polname: string }>(
+      `select p.polname from pg_policy p
+       join pg_class c on c.oid = p.polrelid
+       where c.relname = 'tasks' and p.polcmd = 'a'`,
+    );
+    const names = res.rows.map((r) => r.polname).sort();
+    expect(names).toEqual(
+      ["tasks insert by profile creator", "tasks ai insert by any authenticated"].sort(),
+    );
+  });
+
   it("rejects a second task with the same (exam_profile_id, content_hash)", async () => {
     const profile = await db.query<{ id: string }>(
       `insert into public.exam_profiles (slug, title, language, spec, origin)

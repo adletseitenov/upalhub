@@ -17,11 +17,17 @@ export type NewTaskRow = NewTask & {
 };
 
 export interface TaskBankRepo {
+  /**
+   * Выборка бакета банка заданий по (profileId, type, topic[, difficulty]),
+   * до `limit` штук. `difficulty === null` снимает фильтр по сложности
+   * (релакс-фолбэк T4: импортированные/сгенерированные вне
+   * FIXED_DIFFICULTY задания иначе никогда бы не матчились точным select).
+   */
   findBucket(
     profileId: string,
     type: string,
     topic: string,
-    difficulty: number,
+    difficulty: number | null,
     limit: number,
   ): Promise<StoredTask[]>;
   insertMany(rows: NewTaskRow[]): Promise<{ inserted: StoredTask[]; skipped: number }>;
@@ -57,19 +63,51 @@ function rowToTask(row: Row): StoredTask {
   };
 }
 
+// Толерантная версия rowToTask для findBucket (D-fix3): банк — общий стол,
+// одна мусорная строка (битый body/answer от прежней версии генератора,
+// ручной SQL-фикс и т.п.) не должна ронять всю сборку теста. safeParse на
+// строку — пропускаем с console.warn(id), остальные строки бакета отдаём как
+// обычно.
+function rowToTaskSafe(row: Row): StoredTask | null {
+  const bodyResult = taskBodySchema.safeParse(row.body);
+  const answerResult = taskAnswerSchema.safeParse(row.answer);
+  if (!bodyResult.success || !answerResult.success) {
+    console.warn(`tasks.findBucket: skipping malformed task row id=${row.id} (invalid body/answer shape)`);
+    return null;
+  }
+  try {
+    validateTaskPair(bodyResult.data, answerResult.data);
+  } catch {
+    console.warn(`tasks.findBucket: skipping malformed task row id=${row.id} (body/answer pair invalid)`);
+    return null;
+  }
+  return {
+    id: row.id,
+    type: row.type,
+    topic: row.topic,
+    difficulty: row.difficulty,
+    language: row.language,
+    body: bodyResult.data,
+    answer: answerResult.data,
+    explanation: row.explanation ?? "",
+  };
+}
+
 export function supabaseTaskRepo(client: SupabaseClient<Database>): TaskBankRepo {
   return {
     async findBucket(profileId, type, topic, difficulty, limit) {
-      const { data, error } = await client
+      let query = client
         .from("tasks")
         .select("*")
         .eq("exam_profile_id", profileId)
         .eq("type", type)
-        .eq("topic", topic)
-        .eq("difficulty", difficulty)
-        .limit(limit);
+        .eq("topic", topic);
+      if (difficulty !== null) {
+        query = query.eq("difficulty", difficulty);
+      }
+      const { data, error } = await query.limit(limit);
       if (error) throw error;
-      return (data ?? []).map(rowToTask);
+      return (data ?? []).map(rowToTaskSafe).filter((task): task is StoredTask => task !== null);
     },
 
     async insertMany(rows) {
