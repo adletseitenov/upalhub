@@ -26,5 +26,8 @@ export const examProfileSpecSchema = z.object({
 
 export type ExamProfileSpec = z.infer<typeof examProfileSpecSchema>;
 
-export const sourceRefSchema = z.object({ url: z.url(), title: z.string() });
+export const sourceRefSchema = z.object({
+  url: z.url({ protocol: /^https?$/ }),
+  title: z.string(),
+});
 export type SourceRef = z.infer<typeof sourceRefSchema>;

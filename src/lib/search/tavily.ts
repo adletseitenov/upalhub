@@ -19,7 +19,10 @@ export function tavilySearch(opts: { apiKey: string }): WebSearch {
       return data.results.map((r) => ({ url: r.url, title: r.title, snippet: r.content }));
     },
     async fetchPage(url) {
-      const res = await fetch(url, { headers: { "User-Agent": "U-Pal research bot" } });
+      const res = await fetch(url, {
+        headers: { "User-Agent": "U-Pal research bot" },
+        signal: AbortSignal.timeout(8_000),
+      });
       if (!res.ok) throw new Error(`fetchPage ${res.status} for ${url}`);
       return stripHtml(await res.text()).slice(0, 50_000);
     },

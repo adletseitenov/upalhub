@@ -1,7 +1,8 @@
 import { notFound } from "next/navigation";
+import { z } from "zod";
 import { getTranslations } from "next-intl/server";
 import { supabaseServer } from "@/lib/supabase/server";
-import { examProfileSpecSchema } from "@/features/exam-profile/spec";
+import { examProfileSpecSchema, sourceRefSchema } from "@/features/exam-profile/spec";
 import { LocaleSwitcher } from "@/components/locale-switcher";
 import { PrepareButton } from "@/components/prepare-button";
 import { RefineForm } from "@/components/refine-form";
@@ -20,8 +21,11 @@ export default async function ExamProfilePage({
     .eq("slug", slug)
     .maybeSingle();
   if (!row) notFound();
-  const spec = examProfileSpecSchema.parse(row.spec);
-  const sources = (row.sources ?? []) as { url: string; title: string }[];
+  const parsedSpec = examProfileSpecSchema.safeParse(row.spec);
+  if (!parsedSpec.success) notFound();
+  const spec = parsedSpec.data;
+  const parsedSources = z.array(sourceRefSchema).safeParse(row.sources ?? []);
+  const sources = parsedSources.success ? parsedSources.data : [];
   const { data: userData } = await supabase.auth.getUser();
   const isCreator = userData.user != null && row.created_by === userData.user.id;
 

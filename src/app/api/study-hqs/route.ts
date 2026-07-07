@@ -26,6 +26,18 @@ export async function POST(request: Request) {
     .insert({ user_id: data.user.id, exam_profile_id: parsed.data.examProfileId })
     .select("id")
     .single();
-  if (error) throw error;
+  if (error) {
+    if (error.code === "23505") {
+      const { data: raced, error: racedError } = await supabase
+        .from("study_hqs")
+        .select("id")
+        .eq("user_id", data.user.id)
+        .eq("exam_profile_id", parsed.data.examProfileId)
+        .maybeSingle();
+      if (racedError) throw racedError;
+      if (raced) return NextResponse.json({ id: raced.id, existed: true });
+    }
+    throw error;
+  }
   return NextResponse.json({ id: created.id, existed: false });
 }

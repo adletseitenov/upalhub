@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { examProfileSpecSchema } from "./spec";
+import { examProfileSpecSchema, sourceRefSchema } from "./spec";
 
 const valid = {
   examName: "IELTS Academic",
@@ -39,5 +39,11 @@ describe("examProfileSpecSchema", () => {
     expect(() =>
       examProfileSpecSchema.parse({ ...valid, scoring: { scaleMin: 0, scaleMax: 9 } }),
     ).toThrow();
+  });
+  it("rejects non-http(s) source urls", () => {
+    expect(() => sourceRefSchema.parse({ url: "javascript:alert(1)", title: "x" })).toThrow();
+    expect(sourceRefSchema.parse({ url: "https://a.example", title: "x" }).url).toBe(
+      "https://a.example",
+    );
   });
 });
