@@ -80,7 +80,7 @@ export default async function ExamProfilePage({
         )}
       </section>
 
-      <PrepareButton examProfileId={row.id} />
+      <PrepareButton slug={slug} />
 
       <section>
         <h2 className="mb-2 font-semibold">{t("sources")}</h2>

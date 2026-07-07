@@ -23,7 +23,9 @@ export function ExamSearchForm() {
     if (res.status === 401) return router.push("/sign-in");
     if (res.ok) {
       const { slug } = (await res.json()) as { slug: string };
-      return router.push(`/exams/${slug}`);
+      // D1 (Stage 2.5): после research юзер идёт в интервью-визард, а не
+      // сразу на библиотечную страницу профиля.
+      return router.push(`/onboarding/${slug}`);
     }
     setError(res.status === 404 ? t("notFound") : t("error"));
     setBusy(false);

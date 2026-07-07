@@ -3,21 +3,19 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 
-export function PrepareButton({ examProfileId }: { examProfileId: string }) {
+// D1 (Stage 2.5): вместо прямого POST /api/study-hqs кнопка теперь ведёт в
+// интервью-визард — сам /api/study-hqs зовётся из финального шага
+// OnboardingWizard, с выбором варианта/секций/даты. Публичная страница
+// профиля (/exams/[slug]) остаётся библиотечным активом.
+export function PrepareButton({ slug }: { slug: string }) {
   const router = useRouter();
   const t = useTranslations("profile");
   const [busy, setBusy] = useState(false);
 
-  async function prepare() {
+  function prepare() {
+    if (busy) return;
     setBusy(true);
-    const res = await fetch("/api/study-hqs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ examProfileId }),
-    });
-    if (res.status === 401) return router.push("/sign-in");
-    if (res.ok) return router.push("/hq");
-    setBusy(false);
+    router.push(`/onboarding/${slug}`);
   }
 
   return (
