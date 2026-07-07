@@ -4,6 +4,7 @@ import { supabaseServer } from "@/lib/supabase/server";
 import { examProfileSpecSchema } from "@/features/exam-profile/spec";
 import { LocaleSwitcher } from "@/components/locale-switcher";
 import { PrepareButton } from "@/components/prepare-button";
+import { RefineForm } from "@/components/refine-form";
 
 export default async function ExamProfilePage({
   params,
@@ -21,6 +22,8 @@ export default async function ExamProfilePage({
   if (!row) notFound();
   const spec = examProfileSpecSchema.parse(row.spec);
   const sources = (row.sources ?? []) as { url: string; title: string }[];
+  const { data: userData } = await supabase.auth.getUser();
+  const isCreator = userData.user != null && row.created_by === userData.user.id;
 
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-6 p-6">
@@ -87,6 +90,8 @@ export default async function ExamProfilePage({
           ))}
         </ul>
       </section>
+
+      {isCreator && <RefineForm slug={slug} />}
     </main>
   );
 }
