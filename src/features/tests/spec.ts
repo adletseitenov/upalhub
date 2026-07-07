@@ -11,8 +11,9 @@ export type TestKind = z.infer<typeof testKindSchema>;
 const testSectionSchema = z.object({
   name: z.string().min(1),
   taskIds: z.array(z.string()),
-  // D5 freeze: план по секции на момент сборки (Σ bucket.count секции, ПО
-  // ИНДЕКСУ секции, не по имени) — переживает refill/partial-сборку.
+  // D5 freeze: план по секции на момент сборки (Σ bucket.count секции;
+  // группировка по sectionName — корректно, т.к. уникальность имён секций
+  // enforced superRefine'ом спеки профиля) — переживает refill/partial-сборку.
   plannedCount: z.number().int().nonnegative().nullish(),
   // D5/D8 freeze: модальность секции на момент сборки (снапшот из
   // exam-profile spec, absent = text).
