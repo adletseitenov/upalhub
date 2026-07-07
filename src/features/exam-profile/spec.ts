@@ -19,6 +19,7 @@ export const examProfileSpecSchema = z.object({
     scaleMax: z.number(),
     passingScore: z.number().nullish(),
     unit: z.string().min(1), // «баллов», «band», ...
+    step: z.number().positive().nullish(), // шаг округления шкалы (D5); опционально, старые профили парсятся
   }),
   totalTimeMinutes: z.number().positive().nullish(),
   typicalDates: z.string().nullish(),

@@ -46,4 +46,23 @@ describe("examProfileSpecSchema", () => {
       "https://a.example",
     );
   });
+  it("defaults scoring.step to undefined for existing profiles without it (additive, backward compatible)", () => {
+    const spec = examProfileSpecSchema.parse(valid);
+    expect(spec.scoring.step).toBeUndefined();
+  });
+  it("accepts an explicit scoring.step", () => {
+    const spec = examProfileSpecSchema.parse({
+      ...valid,
+      scoring: { ...valid.scoring, step: 0.5 },
+    });
+    expect(spec.scoring.step).toBe(0.5);
+  });
+  it("rejects a non-positive scoring.step", () => {
+    expect(() =>
+      examProfileSpecSchema.parse({
+        ...valid,
+        scoring: { ...valid.scoring, step: 0 },
+      }),
+    ).toThrow();
+  });
 });
