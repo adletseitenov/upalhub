@@ -11,7 +11,8 @@ export type VoiceInfo = {
 
 export type SpeechCapability =
   | { mode: "speak"; voice: VoiceInfo }
-  | { mode: "fallback"; reason: "unsupported" | "no_voice" };
+  | { mode: "fallback"; reason: "unsupported" | "no_voice" }
+  | { mode: "loading" };
 
 /**
  * primarySubtag — BCP-47 primary language subtag, регистронезависимо:
@@ -42,16 +43,28 @@ export function pickVoice(voices: VoiceInfo[], language: string): VoiceInfo | nu
 }
 
 /**
- * resolveCapability — три ветки: браузер не поддерживает speechSynthesis
- * вовсе ('unsupported'); поддерживает, но нет голоса под язык секции
- * ('no_voice', ожидаемо почти для всего kk); есть подходящий голос ('speak').
+ * resolveCapability — четыре ветки: браузер не поддерживает speechSynthesis
+ * вовсе ('unsupported', решается сразу — ждать нечего); поддерживает, но
+ * голоса ещё не подгрузились ('loading', см. voicesReady); голоса подгрузились,
+ * но нет ни одного под язык секции ('no_voice', ожидаемо почти для всего kk);
+ * есть подходящий голос ('speak').
+ *
+ * voicesReady различает "getVoices() ещё вернул []" (Chrome/Edge на
+ * cold-start сессии — почти всегда так на первом рендере) от "голосов для
+ * языка действительно нет" — без этого оба случая давали одинаковый
+ * fallback/no_voice, и transcript на мгновение утекал в DOM даже для
+ * языков с реальной поддержкой (см. AudioPassage). voicesReady=false ->
+ * 'loading' независимо от содержимого voices; voicesReady=true с пустым
+ * списком совпадений -> 'no_voice' как раньше.
  */
 export function resolveCapability(
   supported: boolean,
   voices: VoiceInfo[],
   language: string,
+  voicesReady: boolean,
 ): SpeechCapability {
   if (!supported) return { mode: "fallback", reason: "unsupported" };
+  if (!voicesReady) return { mode: "loading" };
   const voice = pickVoice(voices, language);
   if (!voice) return { mode: "fallback", reason: "no_voice" };
   return { mode: "speak", voice };
@@ -142,15 +155,20 @@ export function chunkText(text: string, maxChars = 200): string[] {
   return chunks.filter((chunk) => chunk.trim() !== "");
 }
 
-export type AudioView = "controls" | "fallback" | "reveal";
+export type AudioView = "controls" | "fallback" | "reveal" | "loading";
 
 /**
  * resolveAudioView — чистая проекция (capability, reveal) -> какую ветку
  * рендерить в AudioPassage. Вынесена из компонента, т.к. в репо нет
  * @testing-library/react (компоненты по конвенции не тестируются) —
  * ветвление всё равно покрыто юнитами здесь.
+ *
+ * 'loading' идёт ПЕРЕД 'fallback': пока голоса браузера ещё не подгрузились,
+ * мы не знаем, speak или fallback — рендерить транскрипт (fallback-ветка) в
+ * этот момент значит мигать полным текстом на cold-start, до voiceschanged.
  */
 export function resolveAudioView(capability: SpeechCapability, reveal: boolean): AudioView {
+  if (capability.mode === "loading") return "loading";
   if (capability.mode === "fallback") return "fallback";
   return reveal ? "reveal" : "controls";
 }

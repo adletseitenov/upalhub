@@ -22,6 +22,10 @@ export type UseSpeechSynthesisResult = {
 const KEEP_ALIVE_MS = 10_000; // Chrome pause-bug: speechSynthesis молча
 // засыпает на длинных очередях без периодического resume().
 
+const VOICES_READY_TIMEOUT_MS = 1_500; // страховка для браузеров без
+// voiceschanged и без голосов вовсе (iOS Safari в некоторых версиях): после
+// таймаута считаем список голосов финальным, даже если он пуст.
+
 function isSupported(): boolean {
   return typeof window !== "undefined" && "speechSynthesis" in window;
 }
@@ -39,6 +43,12 @@ function currentVoices(): VoiceInfo[] {
 export function useSpeechSynthesis(text: string, language: string): UseSpeechSynthesisResult {
   const supported = isSupported();
   const [voices, setVoices] = useState<VoiceInfo[]>(() => currentVoices());
+  // voicesReady различает "ещё не спрашивали браузер" от "спросили и
+  // получили []": на Chrome/Edge первый getVoices() в сессии почти всегда
+  // возвращает [] до voiceschanged, даже когда голоса для языка реально
+  // есть. Без этого различия resolveCapability не может отличить "голоса
+  // грузятся" от "голосов для языка нет вообще" (см. speech.ts).
+  const [voicesReady, setVoicesReady] = useState<boolean>(() => currentVoices().length > 0);
   const [state, setState] = useState<SpeechPlaybackState>("idle");
   const [playCount, setPlayCount] = useState(0);
 
@@ -46,15 +56,40 @@ export function useSpeechSynthesis(text: string, language: string): UseSpeechSyn
 
   // Async голоса (Chrome): подписка на voiceschanged держит capability в
   // актуальном состоянии, как только браузер догружает голосовой список.
+  // Событие voiceschanged — сигнал "браузер отдал финальный список" даже
+  // если он пустой, поэтому оно всегда взводит voicesReady; синхронная
+  // проверка на mount взводит его только если список уже непуст (иначе мы
+  // бы считали "ещё не готово" готовым с самого начала).
   useEffect(() => {
     if (!supported) return;
     function handleVoicesChanged() {
       setVoices(currentVoices());
+      setVoicesReady(true);
+    }
+    // Indirection (named function, not an inline setState call) matches the
+    // existing handleVoicesChanged pattern above and keeps
+    // react-hooks/set-state-in-effect (React Compiler ESLint plugin) happy
+    // — see s25-task-8-report.md "Проблема по пути" for the same rule
+    // tripping on a direct setState-in-effect earlier in this feature.
+    function checkInitialVoices() {
+      const initial = currentVoices();
+      if (initial.length > 0) {
+        setVoices(initial);
+        setVoicesReady(true);
+      }
     }
     window.speechSynthesis.addEventListener("voiceschanged", handleVoicesChanged);
-    handleVoicesChanged();
+    checkInitialVoices();
     return () => window.speechSynthesis.removeEventListener("voiceschanged", handleVoicesChanged);
   }, [supported]);
+
+  // Таймаут-страховка: браузеры без voiceschanged и без единого голоса
+  // (некоторые версии iOS Safari) иначе держали бы нас в 'loading' вечно.
+  useEffect(() => {
+    if (!supported || voicesReady) return;
+    const timer = setTimeout(() => setVoicesReady(true), VOICES_READY_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [supported, voicesReady]);
 
   const clearKeepAlive = useCallback(() => {
     if (keepAliveRef.current !== null) {
@@ -87,7 +122,12 @@ export function useSpeechSynthesis(text: string, language: string): UseSpeechSyn
     // уже могут быть загружены браузером.
     const freshVoices = currentVoices();
     setVoices(freshVoices);
-    const freshCapability = resolveCapability(true, freshVoices, language);
+    // play()/replay() только доступны из controls/reveal-разметки, которая
+    // сама требует mode:"speak" (см. resolveAudioView) — voicesReady уже
+    // true к этому моменту. Передаём его как есть, а не жёстко true: если
+    // это когда-нибудь вызовут раньше готовности, бейлаут ниже (mode !==
+    // "speak") сработает безопасно вместо озвучки неполного состояния.
+    const freshCapability = resolveCapability(true, freshVoices, language, voicesReady);
     if (freshCapability.mode !== "speak") return;
 
     // cancel() ПЕРЕД стартом — speechSynthesis глобальный singleton, без
@@ -118,7 +158,7 @@ export function useSpeechSynthesis(text: string, language: string): UseSpeechSyn
 
     setState("speaking");
     startKeepAlive();
-  }, [text, language, clearKeepAlive, startKeepAlive]);
+  }, [text, language, voicesReady, clearKeepAlive, startKeepAlive]);
 
   // play()/replay() из onClick — user gesture требование браузеров для
   // разрешения аудио. playCount растёт на каждый явный старт заново, но
@@ -147,7 +187,7 @@ export function useSpeechSynthesis(text: string, language: string): UseSpeechSyn
     setState("speaking");
   }, [startKeepAlive]);
 
-  const capability = resolveCapability(supported, voices, language);
+  const capability = resolveCapability(supported, voices, language, voicesReady);
 
   return { capability, state, playCount, play, pause, resume, replay };
 }

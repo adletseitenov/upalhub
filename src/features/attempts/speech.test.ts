@@ -74,26 +74,42 @@ describe("pickVoice", () => {
 });
 
 describe("resolveCapability", () => {
-  it("falls back to unsupported when the browser has no speechSynthesis", () => {
+  it("falls back to unsupported when the browser has no speechSynthesis, even if voices aren't ready", () => {
     const voices = [voice({ name: "Alex", lang: "en-US" })];
-    expect(resolveCapability(false, voices, "en-US")).toEqual({
+    expect(resolveCapability(false, voices, "en-US", false)).toEqual({
       mode: "fallback",
       reason: "unsupported",
     });
   });
 
-  it("falls back to no_voice when supported but nothing matches the language", () => {
+  it("falls back to no_voice when supported, voices are ready, but nothing matches the language", () => {
     const voices = [voice({ name: "Alex", lang: "en-US" })];
-    expect(resolveCapability(true, voices, "kk-KZ")).toEqual({
+    expect(resolveCapability(true, voices, "kk-KZ", true)).toEqual({
       mode: "fallback",
       reason: "no_voice",
     });
   });
 
-  it("resolves to speak with the picked voice when a match exists", () => {
+  it("resolves to speak with the picked voice when a match exists and voices are ready", () => {
     const enVoice = voice({ name: "Alex", lang: "en-US", localService: true });
-    const result = resolveCapability(true, [enVoice], "en-US");
+    const result = resolveCapability(true, [enVoice], "en-US", true);
     expect(result).toEqual({ mode: "speak", voice: enVoice });
+  });
+
+  it("resolves to loading when supported but voices aren't ready yet, regardless of the (stale) voice list", () => {
+    // Cold-start: first getVoices() call in the session returns [] in
+    // Chrome/Edge before voiceschanged fires. voicesReady=false must win
+    // over an empty list -> 'loading', not 'fallback:no_voice'.
+    expect(resolveCapability(true, [], "kk-KZ", false)).toEqual({ mode: "loading" });
+  });
+
+  it("resolves to loading when voices aren't ready even if a matching voice is already present in the (stale) list", () => {
+    // Repeated renders can carry a non-empty voices array from a previous
+    // capability check while voicesReady is still false (e.g. a brief
+    // window before the ready-flag propagates) -> still 'loading', never
+    // jump straight to 'speak' on an unconfirmed list.
+    const enVoice = voice({ name: "Alex", lang: "en-US" });
+    expect(resolveCapability(true, [enVoice], "en-US", false)).toEqual({ mode: "loading" });
   });
 });
 
@@ -182,5 +198,13 @@ describe("resolveAudioView", () => {
   it("returns reveal when speak capability and reveal is true", () => {
     const cap = { mode: "speak" as const, voice: voice({ name: "Alex", lang: "en-US" }) };
     expect(resolveAudioView(cap, true)).toBe("reveal");
+  });
+
+  it("returns loading whenever capability is loading, regardless of reveal", () => {
+    // This is the branch that closes the cold-start transcript-flash bug:
+    // 'loading' must win over both fallback and reveal so AudioPassage
+    // never renders the transcript before voice discovery settles.
+    expect(resolveAudioView({ mode: "loading" }, false)).toBe("loading");
+    expect(resolveAudioView({ mode: "loading" }, true)).toBe("loading");
   });
 });

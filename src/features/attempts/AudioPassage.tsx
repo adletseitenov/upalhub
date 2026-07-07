@@ -45,6 +45,15 @@ export function AudioPassage({ text, lang, reveal = false }: AudioPassageProps) 
 
   const view = resolveAudioView(capability, reveal);
 
+  // Голоса браузера ещё не подгрузились (Chrome/Edge cold-start: первый
+  // getVoices() почти всегда []) — рано решать speak vs fallback, поэтому
+  // тот же preparing-плейсхолдер, что и до гидратации. Транскрипт сюда
+  // НЕ идёт: инвариант "speak && !reveal → транскрипта нет в DOM" не должен
+  // на мгновение нарушаться, пока мы просто ждём voiceschanged.
+  if (view === "loading") {
+    return <p className="mb-3 text-sm text-gray-500">{t("preparing")}</p>;
+  }
+
   if (view === "fallback") {
     const note = capability.mode === "fallback" && capability.reason === "no_voice"
       ? t("noVoiceNote")
