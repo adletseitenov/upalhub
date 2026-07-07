@@ -98,7 +98,6 @@ export type Database = {
           },
         ]
       }
-      // stage25: manual until regen — миграция 20260708120100_exam_profile_reports.sql
       exam_profile_reports: {
         Row: {
           clarification: string | null
@@ -464,7 +463,6 @@ export type Database = {
       }
       study_hqs: {
         Row: {
-          // stage25: manual until regen — миграция 20260708120000_study_hqs_config.sql
           config: Json
           created_at: string
           exam_date: string | null
@@ -678,12 +676,8 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      // stage25: manual until regen — миграция 20260708120200_replace_test_spec_rpc.sql
       replace_test_spec_if_no_attempts: {
-        Args: {
-          p_test_id: string
-          p_spec: Json
-        }
+        Args: { p_spec: Json; p_test_id: string }
         Returns: boolean
       }
     }
