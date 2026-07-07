@@ -95,7 +95,25 @@ function retryPrompt(examSpec: ExamProfileSpec, bucket: Bucket, deficit: number)
 ЕЩЁ ${deficit} заданий, не повторяя формулировки из предыдущей попытки.`;
 }
 
+/**
+ * Один LLM-запрос батча. Любой сбой самого запроса (непарсибельный после
+ * встроенного ретрая JSON, сетевая ошибка провайдера) трактуется как «0
+ * валидных заданий» — graceful degrade вместо падения всей сборки (живой
+ * инцидент: SyntaxError из extractJson ронял assembleTest целиком).
+ * Исключение: BudgetExceededError (кэп сборки T4) пробрасывается — это
+ * управляющий сигнал assembleTest, не сбой генерации.
+ */
 async function requestValidTasks(llm: Llm, prompt: string, maxCount: number): Promise<GenTask[]> {
+  try {
+    return await requestValidTasksUnsafe(llm, prompt, maxCount);
+  } catch (err) {
+    if (err instanceof Error && err.name === "BudgetExceededError") throw err;
+    console.warn("task generation batch failed, degrading to empty batch:", err);
+    return [];
+  }
+}
+
+async function requestValidTasksUnsafe(llm: Llm, prompt: string, maxCount: number): Promise<GenTask[]> {
   const raw = await llm.complete({
     system: SYSTEM_PROMPT,
     prompt,
@@ -105,7 +123,10 @@ async function requestValidTasks(llm: Llm, prompt: string, maxCount: number): Pr
     // — так один невалидный элемент не роняет весь батч (и не запускает
     // встроенный ретрай llm.complete на весь ответ, см. jsdoc ниже).
     schema: z.array(z.unknown()).min(1).max(maxCount),
-    maxTokens: 8_000,
+    // 10 заданий с пассажами/объяснениями на русском легко превышают 8k
+    // выходных токенов — обрезанный JSON не парсится вовсе (живой инцидент
+    // на gemini-2.5-flash). Запас с горкой: модель отдаёт меньше — дешевле.
+    maxTokens: 24_000,
   });
 
   const valid: GenTask[] = [];

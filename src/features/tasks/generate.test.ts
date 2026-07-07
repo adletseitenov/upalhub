@@ -194,4 +194,54 @@ describe("generateForBucket", () => {
     expect(row.difficulty).toBe(bucket.difficulty); // bucket wins over the LLM's self-reported difficulty
     expect(row.contentHash).toBe(contentHash(row.body));
   });
+
+  it("degrades a failed first batch (unparseable LLM output) to the retry instead of throwing", async () => {
+    const retryBatch = [singleChoiceTask("Спасено ретраем")];
+    let call = 0;
+    const llm = {
+      complete: vi.fn(async () => {
+        call += 1;
+        if (call === 1) throw new Error("no JSON found in LLM output");
+        return retryBatch as never;
+      }),
+    };
+    const repo = fakeRepo();
+
+    const result = await generateForBucket({ llm, repo }, examSpec, "profile-1", {
+      ...bucket,
+      count: 1,
+    });
+
+    expect(llm.complete).toHaveBeenCalledTimes(2);
+    expect(result).toHaveLength(1);
+  });
+
+  it("returns an empty result without throwing when both batch requests fail", async () => {
+    const llm = {
+      complete: vi.fn(async () => {
+        throw new Error("no JSON found in LLM output");
+      }),
+    };
+    const repo = fakeRepo();
+
+    const result = await generateForBucket({ llm, repo }, examSpec, "profile-1", bucket);
+
+    expect(llm.complete).toHaveBeenCalledTimes(2);
+    expect(result).toEqual([]);
+  });
+
+  it("rethrows BudgetExceededError instead of degrading (assembly control signal)", async () => {
+    const budgetError = new Error("llm generation budget exceeded for this test assembly");
+    budgetError.name = "BudgetExceededError";
+    const llm = {
+      complete: vi.fn(async () => {
+        throw budgetError;
+      }),
+    };
+    const repo = fakeRepo();
+
+    await expect(generateForBucket({ llm, repo }, examSpec, "profile-1", bucket)).rejects.toThrow(
+      budgetError,
+    );
+  });
 });
