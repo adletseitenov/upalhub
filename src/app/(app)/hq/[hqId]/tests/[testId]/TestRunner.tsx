@@ -325,7 +325,22 @@ export function TestRunner(props: TestRunnerProps) {
 
   const remaining = deadlineAt !== null ? remainingMs(deadlineAt, now) : null;
   const unansweredCount = props.taskIds.filter((id) => !isAnswered(responses.get(id))).length;
-  const sections = props.sections.length > 0 ? props.sections : [{ name: "", taskIds: props.taskIds }];
+  const rawSections = props.sections.length > 0 ? props.sections : [{ name: "", taskIds: props.taskIds }];
+  // D5 честная сборка: секции без единого задания (пустой бакет после
+  // партиальной сборки) не рендерятся вовсе — ни блока с заголовком, ни
+  // фейковой пустой формы. Данные/ответы (responses, taskIds, submit) не
+  // трогаем — это чисто рендер-фильтр.
+  const sections = rawSections.filter((section) => section.taskIds.length > 0);
+
+  // Все секции опустели (партиальная сборка не дала ни одного задания
+  // нигде) — баннер вместо формы, кнопка "Завершить" скрыта.
+  if (sections.length === 0) {
+    return (
+      <main className="mx-auto flex max-w-2xl flex-col gap-4 p-6">
+        <p className="text-sm text-gray-500">{t("emptyTest")}</p>
+      </main>
+    );
+  }
 
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-6 p-6">

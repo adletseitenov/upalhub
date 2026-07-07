@@ -1,8 +1,10 @@
 import { notFound } from "next/navigation";
+import { getTranslations } from "next-intl/server";
 import { supabaseServer } from "@/lib/supabase/server";
 import { testSpecSchema } from "@/features/tests/spec";
 import { taskBodySchema } from "@/features/tasks/schema";
 import { computeDeadline } from "@/features/attempts/service";
+import { RefillButton } from "@/components/refill-button";
 import { TestRunner } from "./TestRunner";
 
 export default async function TestPage({
@@ -88,18 +90,42 @@ export default async function TestPage({
     };
   }
 
+  // D5 честная UI: партиал считается только если спека вообще размечена
+  // plannedCount (T4 freeze) — старые тесты без этого поля показывают
+  // partial=false (нет баннера, нет "Дособрать"), а не ложную тревогу.
+  const hasPlannedCounts = spec.sections.some((section) => section.plannedCount != null);
+  const planned = hasPlannedCounts
+    ? spec.sections.reduce((sum, section) => sum + (section.plannedCount ?? 0), 0)
+    : null;
+  const actual = spec.sections.reduce((sum, section) => sum + section.taskIds.length, 0);
+  const partial = planned != null && actual < planned;
+  const refillCount = spec.refillCount ?? 0;
+  const attemptExists = attempt !== null;
+
+  const t = await getTranslations("testRunner");
+
   return (
-    <TestRunner
-      testId={testId}
-      hqId={hqId}
-      kind={spec.kind}
-      sections={spec.sections}
-      taskIds={spec.taskIds}
-      totalTimeMinutes={spec.totalTimeMinutes ?? null}
-      scoringSnapshot={spec.scoringSnapshot}
-      tasks={tasks}
-      attempt={attempt}
-      language={spec.language}
-    />
+    <>
+      {partial && !attemptExists && (
+        <div className="mx-auto flex max-w-2xl flex-col items-start gap-2 rounded border border-amber-300 bg-amber-50 p-4 mt-6">
+          <p className="text-sm text-amber-800">
+            {t("partialBanner", { actual, planned: planned ?? 0 })}
+          </p>
+          <RefillButton key={refillCount} testId={testId} refillCount={refillCount} actual={actual} />
+        </div>
+      )}
+      <TestRunner
+        testId={testId}
+        hqId={hqId}
+        kind={spec.kind}
+        sections={spec.sections}
+        taskIds={spec.taskIds}
+        totalTimeMinutes={spec.totalTimeMinutes ?? null}
+        scoringSnapshot={spec.scoringSnapshot}
+        tasks={tasks}
+        attempt={attempt}
+        language={spec.language}
+      />
+    </>
   );
 }
