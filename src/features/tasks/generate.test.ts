@@ -23,6 +23,9 @@ const bucket: Bucket = {
   topic: "Уравнения",
   difficulty: 3,
   count: 10,
+  modality: "text",
+  sectionTopics: [],
+  sectionTaskTypes: [],
 };
 
 function singleChoiceTask(promptText: string, difficulty = 3) {
@@ -39,6 +42,13 @@ function singleChoiceTask(promptText: string, difficulty = 3) {
     explanation: "2+2=4.",
     difficulty,
   };
+}
+
+// D6: тот же shape, что singleChoiceTask, но с body.passage — для
+// audio-модальности и enforcement-тестов дропа.
+function singleChoiceTaskWithPassage(promptText: string, passage: string | null | undefined, difficulty = 3) {
+  const task = singleChoiceTask(promptText, difficulty);
+  return { ...task, body: { ...task.body, passage } };
 }
 
 function fakeRepo(): TaskBankRepo & { rows: NewTaskRow[] } {
@@ -166,6 +176,9 @@ describe("generateForBucket", () => {
       topic: "Skimming",
       difficulty: 4,
       count: 10,
+      modality: "text",
+      sectionTopics: [],
+      sectionTaskTypes: [],
     };
 
     await generateForBucket({ llm, repo }, ieltsSpec, "profile-2", readingBucket);
@@ -245,5 +258,113 @@ describe("generateForBucket", () => {
     await expect(generateForBucket({ llm, repo }, examSpec, "profile-1", bucket)).rejects.toThrow(
       budgetError,
     );
+  });
+
+  // D6: привязка к секции + audio-транскрипт enforcement.
+  describe("D6 section anchoring + audio transcript", () => {
+    it("anchors the prompt to the section name, section topics list, and a cross-section prohibition", async () => {
+      const firstBatch = Array.from({ length: 10 }, (_, i) => singleChoiceTask(`A${i}`));
+      const llm = fakeLlm([firstBatch]);
+      const completeSpy = vi.spyOn(llm, "complete");
+      const repo = fakeRepo();
+      const anchoredBucket: Bucket = {
+        ...bucket,
+        sectionTopics: ["Уравнения", "Неравенства"],
+        sectionTaskTypes: ["algebra", "geometry"],
+      };
+
+      await generateForBucket({ llm, repo }, examSpec, "profile-1", anchoredBucket);
+
+      const prompt = completeSpy.mock.calls[0][0].prompt;
+      expect(prompt).toContain("Математика"); // section name
+      expect(prompt).toContain("Уравнения");
+      expect(prompt).toContain("Неравенства");
+      expect(prompt).toMatch(/ЗАПРЕЩЕНО генерировать задания из других разделов экзамена/);
+    });
+
+    it("adds an audio-transcript requirement block (with content language) for modality:'audio' buckets", async () => {
+      const firstBatch = Array.from({ length: 10 }, (_, i) => singleChoiceTask(`L${i}`));
+      const llm = fakeLlm([firstBatch]);
+      const completeSpy = vi.spyOn(llm, "complete");
+      const repo = fakeRepo();
+      const audioBucket: Bucket = { ...bucket, modality: "audio" };
+
+      await generateForBucket({ llm, repo }, examSpec, "profile-1", audioBucket);
+
+      const prompt = completeSpy.mock.calls[0][0].prompt;
+      expect(prompt).toMatch(/ТРАНСКРИПТ/);
+      expect(prompt).toMatch(/body\.passage ОБЯЗАТЕЛЬНО/);
+      expect(prompt).toContain(examSpec.language);
+    });
+
+    it("does not require body.passage in the prompt for modality:'text' buckets", async () => {
+      const firstBatch = Array.from({ length: 10 }, (_, i) => singleChoiceTask(`T${i}`));
+      const llm = fakeLlm([firstBatch]);
+      const completeSpy = vi.spyOn(llm, "complete");
+      const repo = fakeRepo();
+      const textBucket: Bucket = { ...bucket, modality: "text" };
+
+      await generateForBucket({ llm, repo }, examSpec, "profile-1", textBucket);
+
+      const prompt = completeSpy.mock.calls[0][0].prompt;
+      expect(prompt).not.toMatch(/ТРАНСКРИПТ/);
+      expect(prompt).not.toMatch(/body\.passage ОБЯЗАТЕЛЬНО/);
+    });
+
+    it("drops audio-bucket elements without a real transcript passage, retrying for the deficit", async () => {
+      const longPassage = "A".repeat(60); // ≥50 chars after trim
+      const firstBatch = [
+        singleChoiceTaskWithPassage("Q1", longPassage),
+        singleChoiceTaskWithPassage("Q2", longPassage),
+        singleChoiceTask("Q3"), // no passage field at all
+        singleChoiceTaskWithPassage("Q4", "too short"), // <50 chars
+        singleChoiceTaskWithPassage("Q5", null), // explicit null
+      ]; // 2 valid, 3 dropped -> deficit = bucket.count(5) - 2 = 3
+      const retryBatch = [
+        singleChoiceTaskWithPassage("R1", longPassage),
+        singleChoiceTaskWithPassage("R2", longPassage),
+        singleChoiceTaskWithPassage("R3", longPassage),
+      ];
+      const llm = fakeLlm([firstBatch, retryBatch]);
+      const completeSpy = vi.spyOn(llm, "complete");
+      const repo = fakeRepo();
+      const audioBucket: Bucket = { ...bucket, modality: "audio", count: 5 };
+
+      const result = await generateForBucket({ llm, repo }, examSpec, "profile-1", audioBucket);
+
+      expect(completeSpy).toHaveBeenCalledTimes(2);
+      expect(result).toHaveLength(5); // 2 (first batch) + 3 (retry)
+    });
+
+    it("treats a 50-char (trimmed) passage as valid and a 49-char passage as invalid for audio buckets", async () => {
+      const exactly50 = "B".repeat(50);
+      const only49 = "B".repeat(49);
+      const firstBatch = [
+        singleChoiceTaskWithPassage("Q1", exactly50),
+        singleChoiceTaskWithPassage("Q2", only49),
+      ]; // only Q1 is valid -> deficit = 1 - 1 = 0, no retry
+      const llm = fakeLlm([firstBatch]);
+      const completeSpy = vi.spyOn(llm, "complete");
+      const repo = fakeRepo();
+      const audioBucket: Bucket = { ...bucket, modality: "audio", count: 1 };
+
+      const result = await generateForBucket({ llm, repo }, examSpec, "profile-1", audioBucket);
+
+      expect(completeSpy).toHaveBeenCalledTimes(1);
+      expect(result).toHaveLength(1);
+    });
+
+    it("does not drop text-bucket elements lacking a passage (passage is optional for modality:'text')", async () => {
+      const firstBatch = [singleChoiceTask("Q1"), singleChoiceTask("Q2")]; // neither has a passage
+      const llm = fakeLlm([firstBatch]);
+      const completeSpy = vi.spyOn(llm, "complete");
+      const repo = fakeRepo();
+      const textBucket: Bucket = { ...bucket, modality: "text", count: 2 };
+
+      const result = await generateForBucket({ llm, repo }, examSpec, "profile-1", textBucket);
+
+      expect(completeSpy).toHaveBeenCalledTimes(1); // no retry — nothing was dropped
+      expect(result).toHaveLength(2);
+    });
   });
 });

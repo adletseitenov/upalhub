@@ -52,7 +52,19 @@ export function buildPlan(spec: ExamProfileSpec, kind: TestKind): Bucket[] {
     topics.forEach((topic, topicIdx) => {
       const count = topicCounts[topicIdx];
       if (count <= 0) return;
-      buckets.push({ sectionName: section.name, type, topic, difficulty: FIXED_DIFFICULTY, count });
+      // D6 (T4 пересмотрит): modality/sectionTopics/sectionTaskTypes — контекст
+      // секции для привязки промпта, минимальная проводка из спеки без
+      // экзаменных констант.
+      buckets.push({
+        sectionName: section.name,
+        type,
+        topic,
+        difficulty: FIXED_DIFFICULTY,
+        count,
+        modality: section.modality ?? "text",
+        sectionTopics: section.topics ?? [],
+        sectionTaskTypes: section.taskTypes ?? [],
+      });
     });
   });
 

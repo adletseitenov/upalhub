@@ -1,19 +1,26 @@
 import { z } from "zod";
 import type { Llm } from "@/lib/llm";
-import type { ExamProfileSpec } from "@/features/exam-profile/spec";
+import type { ExamProfileSpec, SectionModality } from "@/features/exam-profile/spec";
 import { taskAnswerSchema, taskBodySchema, validateTaskPair } from "./schema";
 import { contentHash } from "./repo";
 import type { NewTaskRow, StoredTask, TaskBankRepo } from "./repo";
 
-// D2/D3: бакет сборки — конкретная комбинация (секция, тип задания, тема,
+// D2/D3/D6: бакет сборки — конкретная комбинация (секция, тип задания, тема,
 // сложность), для которой в банке нужно `count` заданий. Строится в T4
 // (buildPlan); здесь — только форма данных, которую принимает генерация.
+// D6: modality/sectionTopics/sectionTaskTypes — контекст ВСЕЙ секции
+// (не только этого бакета/темы), in-memory поля для привязки промпта к
+// секции; не персистятся отдельно (задание после генерации несёт только
+// bucket.topic/type/difficulty, см. requestValidTasksUnsafe -> rows ниже).
 export type Bucket = {
   sectionName: string;
   type: string;
   topic: string;
   difficulty: number;
   count: number;
+  modality: SectionModality;
+  sectionTopics: string[];
+  sectionTaskTypes: string[];
 };
 
 // D2: элемент батча = body+answer+explanation(обязателен)+difficulty(1..5),
@@ -47,13 +54,41 @@ const MAX_BATCH = 10;
 const SYSTEM_PROMPT =
   "Ты — генератор заданий для подготовки к экзаменам. Отвечай ТОЛЬКО валидным JSON-массивом, без markdown и без пояснений вне JSON.";
 
-// Промпт строится ТОЛЬКО из спеки экзамена и бакета (D2) — никаких
+// D6: блок привязки к секции — ноль exam-специфичных if (никаких проверок на
+// конкретные названия секций/экзаменов), только данные из bucket/spec.
+// sectionTopics/sectionTaskTypes — темы/типы ВСЕЙ секции (шире, чем
+// bucket.topic/type этого конкретного бакета); пустой список -> строка
+// пропускается, а не рендерится пустой.
+function sectionAnchorBlock(bucket: Bucket): string {
+  const topicsLine =
+    bucket.sectionTopics.length > 0 ? `Темы секции: ${bucket.sectionTopics.join(", ")}.\n` : "";
+  const typesLine =
+    bucket.sectionTaskTypes.length > 0
+      ? `Типы заданий секции: ${bucket.sectionTaskTypes.join(", ")}.\n`
+      : "";
+  return `Задание принадлежит секции "${bucket.sectionName}".
+${topicsLine}${typesLine}КАЖДОЕ задание ОБЯЗАНО проверять навык именно этой секции по этой теме. ЗАПРЕЩЕНО генерировать задания из других разделов экзамена.`;
+}
+
+// D6: аудирование — задание подаётся клиенту как транскрипт (Web Speech TTS
+// озвучивает body.passage, D8). Это только просьба к модели; фактический
+// enforcement (дроп задания без passage) — hasRequiredPassage ниже.
+function audioTranscriptBlock(examSpec: ExamProfileSpec): string {
+  return `Это секция аудирования; задание подаётся как ТРАНСКРИПТ. Для КАЖДОГО задания поле body.passage ОБЯЗАТЕЛЬНО: транскрипт аудиофрагмента (диалог или монолог, 80–150 слов) на языке "${examSpec.language}". Вопрос ОБЯЗАН проверять понимание СОДЕРЖАНИЯ транскрипта; без транскрипта задание невалидно.`;
+}
+
+// Промпт строится ТОЛЬКО из спеки экзамена и бакета (D2/D6) — никаких
 // экзаменных констант в коде.
 function taskShapePrompt(examSpec: ExamProfileSpec, bucket: Bucket, count: number): string {
+  const anchor = sectionAnchorBlock(bucket);
+  const audio = bucket.modality === "audio" ? `\n${audioTranscriptBlock(examSpec)}\n` : "";
+
   return `Экзамен: "${examSpec.examName}" (язык контента: ${examSpec.language}).
 Секция: "${bucket.sectionName}". Тип задания (таксономия экзамена): "${bucket.type}".
 Тема: "${bucket.topic}". Целевая сложность (шкала 1-5): ${bucket.difficulty}.
 
+${anchor}
+${audio}
 Составь РОВНО ${count} заданий. Для каждого задания сам выбери подходящий
 формат из трёх: "single_choice" (один правильный вариант), "multi_choice"
 (несколько правильных вариантов), "text_input" (короткий текстовый или
@@ -95,6 +130,15 @@ function retryPrompt(examSpec: ExamProfileSpec, bucket: Bucket, deficit: number)
 ЕЩЁ ${deficit} заданий, не повторяя формулировки из предыдущей попытки.`;
 }
 
+// D6 enforcement: bucket.modality==='audio' требует body.passage ≥50
+// символов после trim — не только просьба в промпте (модель иногда её
+// игнорирует). Живёт вне genTaskSchema, потому что genTaskSchema не видит
+// bucket (формат/кросс-рефайнмент body/answer не зависит от модальности
+// секции); для modality==='text' passage остаётся полностью опциональным.
+function hasRequiredPassage(body: GenTask["body"]): boolean {
+  return typeof body.passage === "string" && body.passage.trim().length >= 50;
+}
+
 /**
  * Один LLM-запрос батча. Любой сбой самого запроса (непарсибельный после
  * встроенного ретрая JSON, сетевая ошибка провайдера) трактуется как «0
@@ -103,9 +147,14 @@ function retryPrompt(examSpec: ExamProfileSpec, bucket: Bucket, deficit: number)
  * Исключение: BudgetExceededError (кэп сборки T4) пробрасывается — это
  * управляющий сигнал assembleTest, не сбой генерации.
  */
-async function requestValidTasks(llm: Llm, prompt: string, maxCount: number): Promise<GenTask[]> {
+async function requestValidTasks(
+  llm: Llm,
+  prompt: string,
+  maxCount: number,
+  bucket: Bucket,
+): Promise<GenTask[]> {
   try {
-    return await requestValidTasksUnsafe(llm, prompt, maxCount);
+    return await requestValidTasksUnsafe(llm, prompt, maxCount, bucket);
   } catch (err) {
     if (err instanceof Error && err.name === "BudgetExceededError") throw err;
     console.warn("task generation batch failed, degrading to empty batch:", err);
@@ -113,7 +162,12 @@ async function requestValidTasks(llm: Llm, prompt: string, maxCount: number): Pr
   }
 }
 
-async function requestValidTasksUnsafe(llm: Llm, prompt: string, maxCount: number): Promise<GenTask[]> {
+async function requestValidTasksUnsafe(
+  llm: Llm,
+  prompt: string,
+  maxCount: number,
+  bucket: Bucket,
+): Promise<GenTask[]> {
   const raw = await llm.complete({
     system: SYSTEM_PROMPT,
     prompt,
@@ -132,7 +186,11 @@ async function requestValidTasksUnsafe(llm: Llm, prompt: string, maxCount: numbe
   const valid: GenTask[] = [];
   for (const item of raw) {
     const parsed = genTaskSchema.safeParse(item);
-    if (parsed.success) valid.push(parsed.data);
+    if (!parsed.success) continue;
+    // D6: audio-бакет — элемент без полноценного транскрипта дропается как
+    // невалидный (дефицит добирает существующий одиночный ретрай ниже).
+    if (bucket.modality === "audio" && !hasRequiredPassage(parsed.data.body)) continue;
+    valid.push(parsed.data);
   }
   return valid;
 }
@@ -163,7 +221,7 @@ export async function generateForBucket(
   examProfileId: string,
   bucket: Bucket,
 ): Promise<StoredTask[]> {
-  let valid = await requestValidTasks(deps.llm, firstBatchPrompt(examSpec, bucket), MAX_BATCH);
+  let valid = await requestValidTasks(deps.llm, firstBatchPrompt(examSpec, bucket), MAX_BATCH, bucket);
 
   if (valid.length < bucket.count) {
     const deficit = Math.min(MAX_BATCH, Math.max(1, bucket.count - valid.length));
@@ -171,6 +229,7 @@ export async function generateForBucket(
       deps.llm,
       retryPrompt(examSpec, bucket, deficit),
       deficit,
+      bucket,
     );
     valid = valid.concat(retryValid);
   }
