@@ -41,6 +41,14 @@ ${context}
 }`;
 }
 
+// Официальные и образовательные домены важнее новостных и соцсетей.
+function officialnessRank(url: string): number {
+  if (/instagram\.com|facebook\.com|tiktok\.com|vk\.com|youtube\.com/.test(url)) return -1;
+  if (/\.gov\.|\.edu\.|\.edu\/|\.org\/|testcenter|ncgsot|dtm\.uz|ets\.org|ielts/.test(url)) return 2;
+  if (/wikipedia\.org/.test(url)) return 1;
+  return 0;
+}
+
 async function collectPages(search: WebSearch, results: SearchResult[]) {
   const pages: { url: string; title: string; text: string }[] = [];
   for (const r of results) {
@@ -60,13 +68,16 @@ export async function researchExam(
   query: string,
 ): Promise<{ spec: ExamProfileSpec; sources: SourceRef[] }> {
   const queries = [
-    `${query} формат структура экзамена`,
-    `${query} exam format structure scoring`,
+    `${query} официальная спецификация программа темы разделы`,
+    `${query} формат структура экзамена сколько заданий шкала баллов`,
+    `${query} official specification syllabus topics exam format`,
   ];
   const found = (
     await Promise.all(queries.map((q) => deps.search.search(q, { limit: 5 })))
   ).flat();
-  const unique = [...new Map(found.map((r) => [r.url, r])).values()];
+  const unique = [...new Map(found.map((r) => [r.url, r])).values()].sort(
+    (a, b) => officialnessRank(b.url) - officialnessRank(a.url),
+  );
   if (unique.length === 0) throw new ResearchError(`ничего не найдено по запросу: ${query}`);
 
   const pages = await collectPages(deps.search, unique);
