@@ -17,4 +17,9 @@ describe("slugifyExamQuery", () => {
   it("falls back to 'exam' for empty result", () => {
     expect(slugifyExamQuery("!!!")).toBe("exam");
   });
+  it("never ends with a hyphen after 64-char truncation", () => {
+    const slug = slugifyExamQuery("a".repeat(63) + " b");
+    expect(slug.length).toBeLessThanOrEqual(64);
+    expect(slug.endsWith("-")).toBe(false);
+  });
 });

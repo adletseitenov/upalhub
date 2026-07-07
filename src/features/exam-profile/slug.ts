@@ -9,10 +9,9 @@ const TRANSLIT: Record<string, string> = {
 export function slugifyExamQuery(query: string): string {
   let out = "";
   for (const ch of query.trim().toLowerCase()) out += TRANSLIT[ch] ?? ch;
-  return (
-    out
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 64) || "exam"
-  );
+  const cleaned = out
+    .replace(/[^a-z0-9]+/g, "-")
+    .slice(0, 64)
+    .replace(/^-+|-+$/g, "");
+  return cleaned || "exam";
 }
