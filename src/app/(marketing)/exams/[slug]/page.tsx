@@ -3,6 +3,7 @@ import { getTranslations } from "next-intl/server";
 import { supabaseServer } from "@/lib/supabase/server";
 import { examProfileSpecSchema } from "@/features/exam-profile/spec";
 import { LocaleSwitcher } from "@/components/locale-switcher";
+import { PrepareButton } from "@/components/prepare-button";
 
 export default async function ExamProfilePage({
   params,
@@ -71,6 +72,8 @@ export default async function ExamProfilePage({
           </p>
         )}
       </section>
+
+      <PrepareButton examProfileId={row.id} />
 
       <section>
         <h2 className="mb-2 font-semibold">{t("sources")}</h2>
