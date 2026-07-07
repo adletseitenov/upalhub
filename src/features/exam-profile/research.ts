@@ -95,34 +95,6 @@ async function collectPages(search: WebSearch, results: SearchResult[]) {
   return pages;
 }
 
-// D4: адаптер ретраит запрос к LLM один раз, если ответ нарушает целостность
-// спеки (superRefine в spec.ts — dangling sectionName, chooseCount > |group|,
-// дубли имён секций). Второй провал пробрасывается вызывающему коду как есть.
-async function requestSpec(
-  deps: { llm: Llm },
-  prompt: string,
-): Promise<ExamProfileSpec> {
-  try {
-    return await deps.llm.complete({
-      system: SYSTEM_PROMPT,
-      prompt,
-      schema: examProfileSpecSchema,
-      maxTokens: 24_000,
-    });
-  } catch (e) {
-    const reason = e instanceof Error ? e.message.slice(0, 300) : "unknown";
-    return await deps.llm.complete({
-      system: SYSTEM_PROMPT,
-      prompt: `${prompt}\n\nПредыдущий ответ не прошёл проверку целостности (${reason}).
-Проверь, что variants[].sectionNames и selectionGroups[].sectionNames ссылаются ТОЛЬКО
-на существующие sections[].name, имена секций уникальны, а chooseCount не превышает
-число секций в своей группе. Верни исправленный валидный JSON.`,
-      schema: examProfileSpecSchema,
-      maxTokens: 24_000,
-    });
-  }
-}
-
 export async function researchExam(
   deps: { llm: Llm; search: WebSearch },
   query: string,
@@ -152,7 +124,12 @@ export async function researchExam(
         .map((p, i) => `### Источник ${i + 1}: ${p.title}\n${p.url}\n${p.text}`)
         .join("\n\n");
 
-  const spec = await requestSpec(deps, buildPrompt(query, context, opts?.avoid));
+  const spec = await deps.llm.complete({
+    system: SYSTEM_PROMPT,
+    prompt: buildPrompt(query, context, opts?.avoid),
+    schema: examProfileSpecSchema,
+    maxTokens: 24_000,
+  });
 
   const sources: SourceRef[] = (usedSnippets ? unique.slice(0, 8) : pages).map((p) => ({
     url: p.url,

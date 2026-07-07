@@ -2,8 +2,9 @@ import { llmFromRaw } from "./provider";
 import { openRouterRaw } from "./openrouter";
 import type { Llm } from "./types";
 
-export type { Llm, LlmCompleteArgs } from "./types";
+export type { Llm, LlmCompleteArgs, RawComplete } from "./types";
 export { fakeLlm } from "./fake";
+export { llmFromRaw } from "./provider";
 
 function required(value: string | undefined, name: string): string {
   if (!value) throw new Error(`${name} is not set`);

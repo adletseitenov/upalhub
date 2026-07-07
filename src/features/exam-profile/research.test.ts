@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { fakeLlm, type Llm } from "@/lib/llm";
+import { describe, expect, it, vi } from "vitest";
+import { fakeLlm, llmFromRaw, type Llm, type RawComplete } from "@/lib/llm";
 import { fakeSearch } from "@/lib/search";
 import { researchExam, ResearchError } from "./research";
 
@@ -195,17 +195,16 @@ describe("researchExam", () => {
       ...specFixture,
       variants: [{ key: "x", label: "X", sectionNames: ["Несуществующая секция"] }],
     };
-    let calls = 0;
-    const llm: Llm = {
-      async complete({ schema }) {
-        calls++;
-        return schema.parse(calls === 1 ? dangling : specFixture);
-      },
-    };
+    const raw: RawComplete = vi
+      .fn()
+      .mockResolvedValueOnce(JSON.stringify(dangling))
+      .mockResolvedValueOnce(JSON.stringify(specFixture));
+    const llm = llmFromRaw(raw);
     const deps = { llm, search: fakeSearch(results, {}) };
-    const { spec } = await researchExam(deps, "ЕНТ");
-    expect(calls).toBe(2);
-    expect(spec.examName).toBe(specFixture.examName);
+    await expect(researchExam(deps, "ЕНТ")).resolves.toMatchObject({
+      spec: { examName: specFixture.examName },
+    });
+    expect(raw).toHaveBeenCalledTimes(2);
   });
 
   it("requests completion with maxTokens 24000", async () => {
