@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **СТАТУС 2026-07-07:** Tasks 1–8 — ✅ выполнены субагентами (11+ коммитов, 40 юнит-тестов, CI зелёный; финальное ревью пройдено, хардненинг применён: ужесточение RLS exam_profiles, unique-индекс study_hqs, https-only источники + safeParse на публичной странице, таймаут fetchPage). Две новые миграции ждут `db push` в Task 10. ⏸ Tasks 9–10 требуют: TAVILY_API_KEY, Supabase env в .env.local, ключи в Vercel. Бэклог этапа 2 (из финал-ревью): per-user rate limit на LLM-роуты; route-level тесты 401/400/403/404; root middleware для session refresh; продуктовое решение — когда trust повышается до data_refined.
+> **СТАТУС 2026-07-07 (вечер):** Tasks 1–9 — ✅ ГОТОВЫ. Живой eval: 4/4 экзамена (после фикса промпт-контракта null-полей), качество ЕНТ/DTM проверено глазами — модель **`google/gemini-2.5-flash` зафиксирована**. Live smoke на живой БД пройден (`evals/live-smoke/stage1.eval.ts`): auth → research → RLS-вставка → дедуп без LLM → штаб. Реальный 401-гейт подтверждён на всех трёх POST-роутах. Профиль `ent-kazahstan` уже в живой БД.
+> ⏸ Остаток Task 10 (нужен Дияр или доступ Vercel/sbp): (1) три env в Vercel: OPENROUTER_API_KEY, LLM_MODEL=google/gemini-2.5-flash, TAVILY_API_KEY; (2) redeploy прода (текущий билд старый — /exams/* даёт 404; git-интеграцию Vercel стоит подключить); (3) `supabase db push` двух миграций хардненинга; (4) браузерный smoke-чеклист Step 5 на проде.
+> Бэклог этапа 2 (из финал-ревью): per-user rate limit на LLM-роуты; route-level тесты 401/400/403/404; root middleware для session refresh; продуктовое решение — когда trust повышается до data_refined.
 
 **Goal:** Сердце продукта: пользователь называет любой экзамен → AI ищет его в интернете → структурированный профиль с источниками сохраняется в библиотеку → страница профиля → кнопка «Готовиться» кладёт экзамен в штаб.
 
