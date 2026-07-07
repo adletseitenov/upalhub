@@ -59,7 +59,7 @@ taskResponseSchema = discriminatedUnion("format", [   // то, что шлёт �
 
 ### D3. Сборка: buildPlan → select → generate → freeze
 
-`buildPlan(spec, kind)`: бакеты `{sectionName, type (из taskTypes, fallback "single_choice"-семантика по умолчанию), topic (из topics, fallback [section.name]), difficulty-band, count}`. Квоты: `diagnostic` = breadth по всем секциям, cap **12 заданий суммарно**; `practice` = `section.taskCount ?? 8`; `mock` = полный `taskCount`. Толерантность: отсутствие topics/taskTypes/taskCount/timeLimit НЕ роняет сборку.
+`buildPlan(spec, kind)`: бакеты `{sectionName, type (из taskTypes, fallback "single_choice"-семантика по умолчанию), topic (из topics, fallback [section.name]), difficulty-band, count}`. Квоты: `diagnostic` = breadth по всем секциям, cap **12 заданий суммарно**; `practice` = `section.taskCount ?? 8`; `mock` = полный `taskCount ?? 8` (fallback обязателен — толерантность к неполной спеке). Толерантность: отсутствие topics/taskTypes/taskCount/timeLimit НЕ роняет сборку.
 `assembleTest`: select банка по бакет-индексу → дефицит → D2 (cap 3 вызова) → re-select → distinct taskIds → insert `tests` c замороженным spec:
 
 ```ts
