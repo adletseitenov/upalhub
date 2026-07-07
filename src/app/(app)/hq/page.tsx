@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getTranslations } from "next-intl/server";
 import { supabaseServer } from "@/lib/supabase/server";
 import { LocaleSwitcher } from "@/components/locale-switcher";
+import { StartTestButton } from "@/components/start-test-button";
 
 export default async function HqPage() {
   const t = await getTranslations("hq");
@@ -25,10 +26,11 @@ export default async function HqPage() {
       ) : (
         <ul className="flex flex-col gap-2">
           {hqs.map((hq) => (
-            <li key={hq.id} className="rounded border p-3">
+            <li key={hq.id} className="flex flex-col gap-2 rounded border p-3">
               <Link className="underline" href={`/exams/${hq.exam_profiles?.slug}`}>
                 {hq.exam_profiles?.title}
               </Link>
+              <StartTestButton hqId={hq.id} />
             </li>
           ))}
         </ul>
