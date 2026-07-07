@@ -535,6 +535,7 @@ export type Database = {
         Row: {
           answer: Json;
           body: Json;
+          content_hash: string | null; // stage2: manual until regen
           created_at: string;
           difficulty: number;
           exam_profile_id: string;
@@ -549,6 +550,7 @@ export type Database = {
         Insert: {
           answer: Json;
           body: Json;
+          content_hash?: string | null; // stage2: manual until regen
           created_at?: string;
           difficulty: number;
           exam_profile_id: string;
@@ -563,6 +565,7 @@ export type Database = {
         Update: {
           answer?: Json;
           body?: Json;
+          content_hash?: string | null; // stage2: manual until regen
           created_at?: string;
           difficulty?: number;
           exam_profile_id?: string;

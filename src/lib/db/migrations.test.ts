@@ -81,4 +81,44 @@ describe("supabase migrations", () => {
     );
     expect(res.rows[0].count).toBe("1");
   });
+
+  it("creates the stage2 task-bank indexes", async () => {
+    const res = await db.query<{ indexname: string }>(
+      `select indexname from pg_indexes where schemaname = 'public'`,
+    );
+    const names = res.rows.map((r) => r.indexname);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "tasks_profile_hash_unique",
+        "tasks_bucket_idx",
+        "attempts_one_open_per_test",
+        "attempt_items_task_idx",
+      ]),
+    );
+  });
+
+  it("rejects a second task with the same (exam_profile_id, content_hash)", async () => {
+    const profile = await db.query<{ id: string }>(
+      `insert into public.exam_profiles (slug, title, language, spec, origin)
+       values ('stage2-dup-hash-test', 'Stage2 Dup Hash Test', 'ru', '{}'::jsonb, 'manual')
+       returning id`,
+    );
+    const profileId = profile.rows[0].id;
+
+    await db.exec(`
+      insert into public.tasks
+        (exam_profile_id, type, topic, difficulty, language, body, answer, explanation, origin, content_hash)
+      values
+        ('${profileId}', 'reading', 'topic-a', 1, 'ru', '{}'::jsonb, '{}'::jsonb, null, 'ai', 'dup-hash-value')
+    `);
+
+    await expect(
+      db.exec(`
+        insert into public.tasks
+          (exam_profile_id, type, topic, difficulty, language, body, answer, explanation, origin, content_hash)
+        values
+          ('${profileId}', 'reading', 'topic-a', 1, 'ru', '{}'::jsonb, '{}'::jsonb, null, 'ai', 'dup-hash-value')
+      `),
+    ).rejects.toThrow();
+  });
 });
