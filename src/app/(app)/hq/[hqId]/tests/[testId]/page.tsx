@@ -99,6 +99,7 @@ export default async function TestPage({
       scoringSnapshot={spec.scoringSnapshot}
       tasks={tasks}
       attempt={attempt}
+      language={spec.language}
     />
   );
 }

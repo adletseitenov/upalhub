@@ -5,9 +5,10 @@ import { taskResponseSchema } from "@/features/tasks/schema";
 import type { TaskBody, TaskResponse } from "@/features/tasks/schema";
 import type { ScoringSnapshot } from "@/features/tests/scoring";
 import { formatRemaining, isExpired, remainingMs } from "@/features/attempts/timer";
+import { AudioPassage } from "@/features/attempts/AudioPassage";
 import { ResultView } from "./ResultView";
 
-type SectionSpec = { name: string; taskIds: string[] };
+type SectionSpec = { name: string; taskIds: string[]; modality?: "text" | "audio" | null };
 type TaskItem = { id: string; body: TaskBody };
 type SavedItem = { taskId: string; response: unknown };
 type InitialAttempt = {
@@ -27,6 +28,7 @@ export type TestRunnerProps = {
   scoringSnapshot: ScoringSnapshot;
   tasks: TaskItem[];
   attempt: InitialAttempt;
+  language: string;
 };
 
 type AttemptResult = { raw: number; scaled: number; total: number };
@@ -100,6 +102,7 @@ async function startOnce(testId: string): Promise<StartOutcome> {
 
 export function TestRunner(props: TestRunnerProps) {
   const t = useTranslations("testRunner");
+  const tAudio = useTranslations("audio");
   const taskById = useMemo(() => new Map(props.tasks.map((task) => [task.id, task])), [props.tasks]);
   const orderIndex = useMemo(
     () => new Map(props.taskIds.map((id, i) => [id, i])),
@@ -340,9 +343,20 @@ export function TestRunner(props: TestRunnerProps) {
         </p>
       </header>
 
-      {sections.map((section, sectionIndex) => (
+      {sections.map((section, sectionIndex) => {
+        const isAudio = section.modality === "audio";
+        return (
         <section key={section.name || sectionIndex} className="flex flex-col gap-3">
-          {section.name && <h2 className="font-semibold">{section.name}</h2>}
+          {section.name && (
+            <h2 className="font-semibold">
+              {section.name}
+              {isAudio && (
+                <span className="ml-2 rounded bg-gray-100 px-2 py-0.5 text-xs font-normal text-gray-600">
+                  {tAudio("sectionBadge")}
+                </span>
+              )}
+            </h2>
+          )}
           <ul className="flex flex-col gap-3">
             {section.taskIds.map((taskId) => {
               const task = taskById.get(taskId);
@@ -353,9 +367,13 @@ export function TestRunner(props: TestRunnerProps) {
                 <li key={taskId} className="rounded border p-4">
                   <p className="mb-2 text-sm text-gray-500">{number}.</p>
                   {task.body.passage && (
-                    <blockquote className="mb-3 rounded bg-gray-50 p-3 text-sm text-gray-700">
-                      {task.body.passage}
-                    </blockquote>
+                    isAudio ? (
+                      <AudioPassage text={task.body.passage} lang={props.language} />
+                    ) : (
+                      <blockquote className="mb-3 rounded bg-gray-50 p-3 text-sm text-gray-700">
+                        {task.body.passage}
+                      </blockquote>
+                    )
                   )}
                   <p className="mb-3 font-medium">{task.body.prompt}</p>
 
@@ -422,7 +440,8 @@ export function TestRunner(props: TestRunnerProps) {
             })}
           </ul>
         </section>
-      ))}
+        );
+      })}
 
       <footer className="flex flex-col gap-2">
         <p className="text-sm text-gray-500">
