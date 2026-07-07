@@ -1,5 +1,7 @@
 # U-Pal Stage 2 — Universal Test Engine Implementation Plan
 
+> **STATUS (2026-07-07): ЭТАП ЗАВЕРШЁН.** Задачи 1–8 выполнены субагентным конвейером (ревью на задачу + финал-ревью + фикс-волна: import-достижимость, RLS tasks insert, устойчивость к мусорным строкам, UI error paths). 232 юнит/route-теста. Обе миграции этапа ПРИМЕНЕНЫ к живой БД (Management API). Live smoke (evals/live-smoke/stage2.eval.ts): сборка ≤3 LLM-вызова → попытка → идемпотентный сабмит (1/8 → 17 по шкале ЕНТ) → полностью тёплая сборка = 0 вызовов. Живая калибровка: maxTokens генерации 8k→24k (обрезка JSON на gemini-2.5-flash), сбой батча деградирует в пустой, не роняет сборку. Остаток: браузерный клик-тест основателя на проде.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** По любому профилю экзамена собирается и проходится тест: LLM-генерация заданий с кэшем в общий банк, прохождение с таймером/автосейвом/resume, детерминированный скоринг в шкале экзамена, импорт готовых заданий.
