@@ -7,6 +7,8 @@ const current = {
   language: "kk",
   description: "Тест.",
   sections: [{ name: "Математика", taskCount: null, timeLimitMinutes: null, taskTypes: [], topics: [] }],
+  variants: [],
+  selectionGroups: [],
   scoring: { scaleMin: 0, scaleMax: 140, unit: "баллов" },
 };
 

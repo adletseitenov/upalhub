@@ -16,6 +16,8 @@ const minimalSpec: ExamProfileSpec = {
   language: "en",
   description: "d",
   sections: [],
+  variants: [],
+  selectionGroups: [],
   scoring: { scaleMin: 0, scaleMax: 100, unit: "points" },
 };
 
@@ -43,6 +45,8 @@ const entSpec: ExamProfileSpec = {
     },
     { name: "История Казахстана", taskCount: 20, timeLimitMinutes: 40, taskTypes: [], topics: [] },
   ],
+  variants: [],
+  selectionGroups: [],
   scoring: { scaleMin: 0, scaleMax: 140, unit: "баллов" },
 };
 
@@ -67,6 +71,8 @@ const ieltsSpec: ExamProfileSpec = {
       topics: ["Skimming", "Scanning"],
     },
   ],
+  variants: [],
+  selectionGroups: [],
   scoring: { scaleMin: 0, scaleMax: 9, unit: "band" },
 };
 

@@ -67,4 +67,62 @@ describe("testSpecSchema", () => {
       testSpecSchema.parse({ ...valid, sections: [{ name: "", taskIds: [] }] }),
     ).toThrow();
   });
+
+  // D5: freeze plannedCount/modality per section (по индексу), refillCount на спеке.
+  it("defaults section plannedCount/modality and spec refillCount to undefined when absent", () => {
+    const spec = testSpecSchema.parse(valid);
+    expect(spec.sections[0].plannedCount).toBeUndefined();
+    expect(spec.sections[0].modality).toBeUndefined();
+    expect(spec.refillCount).toBeUndefined();
+  });
+
+  it("accepts a section with plannedCount and modality, and a spec-level refillCount", () => {
+    const spec = testSpecSchema.parse({
+      ...valid,
+      sections: [{ name: "Listening", taskIds: ["t1"], plannedCount: 5, modality: "audio" }],
+      refillCount: 2,
+    });
+    expect(spec.sections[0].plannedCount).toBe(5);
+    expect(spec.sections[0].modality).toBe("audio");
+    expect(spec.refillCount).toBe(2);
+  });
+
+  it("allows plannedCount to be null (tolerance)", () => {
+    const spec = testSpecSchema.parse({
+      ...valid,
+      sections: [{ name: "Математика", taskIds: [], plannedCount: null }],
+    });
+    expect(spec.sections[0].plannedCount).toBeNull();
+  });
+
+  it("rejects a negative plannedCount", () => {
+    expect(() =>
+      testSpecSchema.parse({
+        ...valid,
+        sections: [{ name: "Математика", taskIds: [], plannedCount: -1 }],
+      }),
+    ).toThrow();
+  });
+
+  it("rejects a non-integer plannedCount", () => {
+    expect(() =>
+      testSpecSchema.parse({
+        ...valid,
+        sections: [{ name: "Математика", taskIds: [], plannedCount: 1.5 }],
+      }),
+    ).toThrow();
+  });
+
+  it("rejects an unknown section modality", () => {
+    expect(() =>
+      testSpecSchema.parse({
+        ...valid,
+        sections: [{ name: "Математика", taskIds: [], modality: "video" }],
+      }),
+    ).toThrow();
+  });
+
+  it("rejects a negative refillCount", () => {
+    expect(() => testSpecSchema.parse({ ...valid, refillCount: -1 })).toThrow();
+  });
 });
