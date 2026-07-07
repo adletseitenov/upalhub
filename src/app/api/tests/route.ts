@@ -2,30 +2,43 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { supabaseServer } from "@/lib/supabase/server";
 import { createLlm } from "@/lib/llm";
-import { createRateLimiter } from "@/lib/rate-limit";
 import { examProfileSpecSchema, sourceRefSchema } from "@/features/exam-profile/spec";
 import type { StoredExamProfile } from "@/features/exam-profile/service";
+import { hqConfigSchema, validateHqConfig, type HqConfig } from "@/features/exam-profile/selection";
 import { supabaseTaskRepo } from "@/features/tasks/repo";
 import { supabaseTestRepo } from "@/features/tests/repo";
 import { testKindSchema } from "@/features/tests/spec";
 import { assembleTest } from "@/features/tests/assemble";
+import { assemblyLimiter } from "@/features/tests/assembly-limiter";
 
 // Сборка теста может занять несколько LLM-вызовов (D2/D3, cap 3).
 export const maxDuration = 60;
 
 const bodySchema = z.object({ hqId: z.uuid(), kind: testKindSchema });
 
-// Best-effort, per-instance лимит на сборку (дорогой LLM-путь) — см. jsdoc
-// в src/lib/rate-limit.ts: сбрасывается на деплой, не шарится между
-// инстансами. 5 сборок / 10 минут на пользователя.
-const limiter = createRateLimiter({ capacity: 5, refillPerMs: 5 / (10 * 60_000) });
+// D5: study_hqs.config появляется миграцией T5 — до неё колонки в
+// database.types.ts нет, поэтому читаем defensively через cast. 🔴 Array.isArray
+// гард из ревью T1: непарсибельный/неожиданный (в т.ч. массив) jsonb -> null,
+// а не 500 — resolveActiveSections/validateHqConfig трактуют null как legacy.
+function parseHqConfig(raw: unknown): HqConfig | null {
+  if (raw == null || Array.isArray(raw)) return null;
+  const parsed = hqConfigSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+
+// D5: config считается "непустым" (требующим validateHqConfig -> 422) только
+// если ученик реально что-то выбрал — легаси-штабы без онбординга (config
+// null или {}) не должны получать 422 за то, что никогда не проходили визард.
+function isEmptyHqConfig(config: HqConfig | null): boolean {
+  return config === null || (config.variantKey == null && config.selectedSectionNames.length === 0);
+}
 
 export async function POST(request: Request) {
   const supabase = await supabaseServer();
   const { data } = await supabase.auth.getUser();
   if (!data.user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
-  if (!limiter.take(data.user.id)) {
+  if (!assemblyLimiter.take(data.user.id)) {
     return NextResponse.json({ error: "rate_limited" }, { status: 429 });
   }
 
@@ -34,9 +47,12 @@ export async function POST(request: Request) {
 
   // hq принадлежит юзеру — явная проверка (RLS тоже фильтрует, но роут
   // отдаёт понятный 404, а не полагается только на пустой select от RLS).
+  // select("*") (не точечный список колонок) — до миграции T5 колонки config
+  // ещё нет в database.types.ts, но "*" переживёт её появление без правки
+  // этого select; парсим config ниже через cast (см. parseHqConfig).
   const { data: hq, error: hqError } = await supabase
     .from("study_hqs")
-    .select("id, exam_profile_id")
+    .select("*")
     .eq("id", parsed.data.hqId)
     .eq("user_id", data.user.id)
     .maybeSingle();
@@ -66,13 +82,21 @@ export async function POST(request: Request) {
     trust: profileRow.trust as StoredExamProfile["trust"],
   };
 
+  const hqConfig = parseHqConfig((hq as { config?: unknown }).config);
+  if (!isEmptyHqConfig(hqConfig)) {
+    const validation = validateHqConfig(spec, hqConfig);
+    if (!validation.ok) {
+      return NextResponse.json({ error: "reconfigure_needed" }, { status: 422 });
+    }
+  }
+
   const test = await assembleTest(
     {
       taskRepo: supabaseTaskRepo(supabase),
       testRepo: supabaseTestRepo(supabase),
       llm: createLlm(),
     },
-    { hqId: hq.id, examProfile, kind: parsed.data.kind },
+    { hqId: hq.id, examProfile, kind: parsed.data.kind, hqConfig },
   );
 
   // Ответ намеренно минимален: tests.spec содержит только taskIds, ответы в

@@ -2,12 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import { fakeLlm } from "@/lib/llm";
 import type { ExamProfileSpec } from "@/features/exam-profile/spec";
 import type { StoredExamProfile } from "@/features/exam-profile/service";
+import type { HqConfig } from "@/features/exam-profile/selection";
 import type { NewTaskRow, StoredTask, TaskBankRepo } from "@/features/tasks/repo";
 import type { Bucket } from "@/features/tasks/generate";
 import { parseImport, importTasks } from "@/features/tasks/import";
-import { buildPlan, assembleTest } from "./assemble";
+import { buildPlan, assembleTest, reassembleTest } from "./assemble";
 import type { TestRepo, StoredTest } from "./repo";
-import type { TestKind } from "./spec";
+import type { TestKind, TestSpec } from "./spec";
 
 // --- фикстуры спек -------------------------------------------------------
 
@@ -208,6 +209,16 @@ function fakeTestRepo(): TestRepo & { rows: StoredTest[] } {
     },
     async getTest(id) {
       return rows.find((r) => r.id === id) ?? null;
+    },
+    async replaceTestSpecIfNoAttempts(testId, spec) {
+      // Не используется по контракту T4 (reassembleTest не пишет в БД — deps
+      // без testRepo), но нужен для формы TestRepo. Best-effort стаб для
+      // будущих T6-тестов, если они переиспользуют этот фейк: заменяет spec
+      // безусловно (T6 сам добавит fixture с попытками, когда понадобится).
+      const test = rows.find((r) => r.id === testId);
+      if (!test) return false;
+      test.spec = spec;
+      return true;
     },
   };
 }
@@ -579,6 +590,282 @@ describe("assembleTest", () => {
       expect(completeSpy).not.toHaveBeenCalled();
       expect(result.spec.taskIds).toHaveLength(5);
       expect(new Set(result.spec.taskIds)).toEqual(new Set(importedIds));
+    });
+  });
+});
+
+// ===========================================================================
+// D5: hqConfig-driven active sections, round-robin + rotation, plannedCount
+// freeze, reassembleTest.
+// ===========================================================================
+
+describe("D5: assembleTest honors hqConfig, round-robin budget, frozen planned counts", () => {
+  const groupSpec: ExamProfileSpec = {
+    ...minimalSpec,
+    examName: "Экзамен с выбором языка",
+    sections: [
+      { name: "Обязательная", taskCount: 4, timeLimitMinutes: null, taskTypes: [], topics: [] },
+      { name: "Английский", taskCount: 4, timeLimitMinutes: null, taskTypes: [], topics: [] },
+      { name: "Немецкий", taskCount: 4, timeLimitMinutes: null, taskTypes: [], topics: [] },
+    ],
+    selectionGroups: [
+      { key: "lang", title: "Язык", chooseCount: 1, sectionNames: ["Английский", "Немецкий"] },
+    ],
+  };
+
+  it("hqConfig.selectedSectionNames narrows the frozen spec to required + selected sections only", async () => {
+    const profile = examProfileFixture(groupSpec, "profile-group");
+    const allBuckets = buildPlan(groupSpec, "practice");
+    const taskRepo = fakeTaskRepo(seedForBuckets(allBuckets, "profile-group", "en"));
+    const testRepo = fakeTestRepo();
+    const llm = fakeLlm([]);
+    const completeSpy = vi.spyOn(llm, "complete");
+
+    const result = await assembleTest(
+      { taskRepo, testRepo, llm },
+      {
+        hqId: "hq-group",
+        examProfile: profile,
+        kind: "practice",
+        hqConfig: { selectedSectionNames: ["Английский"] },
+      },
+    );
+
+    expect(completeSpy).not.toHaveBeenCalled();
+    expect(result.spec.sections.map((s) => s.name).sort()).toEqual(["Английский", "Обязательная"]);
+    expect(result.spec.sections.some((s) => s.name === "Немецкий")).toBe(false);
+  });
+
+  const variantSpec: ExamProfileSpec = {
+    ...minimalSpec,
+    examName: "Вариантный экзамен",
+    sections: [
+      { name: "Математика", taskCount: 4, timeLimitMinutes: null, taskTypes: [], topics: [] },
+      { name: "Физика", taskCount: 4, timeLimitMinutes: null, taskTypes: [], topics: [] },
+      { name: "Химия", taskCount: 4, timeLimitMinutes: null, taskTypes: [], topics: [] },
+    ],
+    variants: [
+      { key: "phys-math", label: "ФМ", sectionNames: ["Математика", "Физика"] },
+      { key: "chem", label: "Химия-профиль", sectionNames: ["Математика", "Химия"] },
+    ],
+  };
+
+  it("hqConfig.variantKey narrows the frozen spec to only that variant's sections", async () => {
+    const profile = examProfileFixture(variantSpec, "profile-variant");
+    const allBuckets = buildPlan(variantSpec, "practice");
+    const taskRepo = fakeTaskRepo(seedForBuckets(allBuckets, "profile-variant", "en"));
+    const testRepo = fakeTestRepo();
+
+    const result = await assembleTest(
+      { taskRepo, testRepo, llm: fakeLlm([]) },
+      {
+        hqId: "hq-variant",
+        examProfile: profile,
+        kind: "practice",
+        hqConfig: { variantKey: "phys-math", selectedSectionNames: [] },
+      },
+    );
+
+    expect(result.spec.sections.map((s) => s.name).sort()).toEqual(["Математика", "Физика"]);
+  });
+
+  it("treats a null or empty hqConfig as legacy — all sections active, same as an omitted hqConfig", async () => {
+    const profile = examProfileFixture(entSpec, "profile-ent-legacy");
+    const buckets = buildPlan(entSpec, "diagnostic");
+    const expectedNames = entSpec.sections.map((s) => s.name);
+    const configs: (HqConfig | null)[] = [null, { selectedSectionNames: [] }];
+
+    for (const hqConfig of configs) {
+      const taskRepo = fakeTaskRepo(seedForBuckets(buckets, "profile-ent-legacy", "kk"));
+      const testRepo = fakeTestRepo();
+      const result = await assembleTest(
+        { taskRepo, testRepo, llm: fakeLlm([]) },
+        { hqId: "hq-legacy", examProfile: profile, kind: "diagnostic", hqConfig },
+      );
+      expect(result.spec.sections.map((s) => s.name)).toEqual(expectedNames);
+    }
+  });
+
+  it("round-robin gives every active section at least one generational call under a tight budget (no orphan section)", async () => {
+    const spec: ExamProfileSpec = {
+      ...minimalSpec,
+      sections: [
+        { name: "A", taskCount: 3, timeLimitMinutes: null, taskTypes: [], topics: ["t1", "t2", "t3"] },
+        { name: "B", taskCount: 1, timeLimitMinutes: null, taskTypes: [], topics: [] },
+        { name: "C", taskCount: 1, timeLimitMinutes: null, taskTypes: [], topics: [] },
+      ],
+    };
+    // Sanity: buildPlan's flat order puts all 3 of A's buckets before B and
+    // C — without round-robin the 3-call budget is entirely consumed by A,
+    // orphaning B and C (the bug D5 fixes).
+    const flatOrder = buildPlan(spec, "practice").map((b) => b.sectionName);
+    expect(flatOrder).toEqual(["A", "A", "A", "B", "C"]);
+
+    const profile = examProfileFixture(spec, "profile-roundrobin");
+    const taskRepo = fakeTaskRepo(); // пустой банк — все бакеты требуют генерации
+    const testRepo = fakeTestRepo();
+    const llm = fakeLlm([batchOf(10, "rr0"), batchOf(10, "rr1"), batchOf(10, "rr2")]);
+    const completeSpy = vi.spyOn(llm, "complete");
+
+    const result = await assembleTest(
+      { taskRepo, testRepo, llm },
+      { hqId: "hq-roundrobin", examProfile: profile, kind: "practice" },
+    );
+
+    expect(completeSpy).toHaveBeenCalledTimes(3);
+    for (const name of ["A", "B", "C"]) {
+      const section = result.spec.sections.find((s) => s.name === name)!;
+      expect(section.taskIds.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("rotates the round-robin start section by refillCount so the first generational call hits a different section", async () => {
+    const spec: ExamProfileSpec = {
+      ...minimalSpec,
+      sections: ["X", "Y", "Z"].map((name) => ({
+        name,
+        taskCount: 1,
+        timeLimitMinutes: null,
+        taskTypes: [],
+        topics: [],
+      })),
+    };
+    const profile = examProfileFixture(spec, "profile-rotate");
+
+    async function firstGeneratedSection(refillCount: number): Promise<string> {
+      const taskRepo = fakeTaskRepo();
+      const testRepo = fakeTestRepo();
+      const llm = fakeLlm([batchOf(10, "a"), batchOf(10, "b"), batchOf(10, "c")]);
+      const completeSpy = vi.spyOn(llm, "complete");
+      await assembleTest(
+        { taskRepo, testRepo, llm },
+        { hqId: "hq-rotate", examProfile: profile, kind: "practice", refillCount },
+      );
+      const firstArgs = completeSpy.mock.calls[0][0] as { prompt: string };
+      const hit = ["X", "Y", "Z"].find((name) => firstArgs.prompt.includes(`Секция: "${name}"`));
+      if (!hit) throw new Error("no section name found in first generation prompt");
+      return hit;
+    }
+
+    const first0 = await firstGeneratedSection(0);
+    const first1 = await firstGeneratedSection(1);
+
+    expect(first0).toBe("X");
+    expect(first1).not.toBe(first0);
+  });
+
+  it("freezes plannedCount per section (>= actual taskIds under budget-limited deficit)", async () => {
+    const spec: ExamProfileSpec = {
+      ...minimalSpec,
+      sections: Array.from({ length: 5 }, (_, i) => ({
+        name: `Section ${i}`,
+        taskCount: 5,
+        timeLimitMinutes: 10,
+        taskTypes: [`type${i}`],
+        topics: [],
+      })),
+    };
+    const expectedPlanned = buildPlan(spec, "practice").reduce<Record<string, number>>((acc, b) => {
+      acc[b.sectionName] = (acc[b.sectionName] ?? 0) + b.count;
+      return acc;
+    }, {});
+    const profile = examProfileFixture(spec, "profile-planned");
+    const taskRepo = fakeTaskRepo(); // пустой банк — бюджет ≤3 гарантирует дефицит хотя бы в одной секции
+    const testRepo = fakeTestRepo();
+    const llm = fakeLlm([batchOf(10, "p0"), batchOf(10, "p1"), batchOf(10, "p2")]);
+
+    const result = await assembleTest(
+      { taskRepo, testRepo, llm },
+      { hqId: "hq-planned", examProfile: profile, kind: "practice" },
+    );
+
+    for (const section of result.spec.sections) {
+      expect(section.plannedCount).toBe(expectedPlanned[section.name]);
+      expect(section.taskIds.length).toBeLessThanOrEqual(section.plannedCount!);
+    }
+    expect(result.spec.sections.some((s) => s.taskIds.length < s.plannedCount!)).toBe(true);
+    expect(result.spec.refillCount).toBe(0);
+  });
+
+  describe("reassembleTest", () => {
+    it("does not write to the repo, increments refillCount, and freezes modality per section", async () => {
+      const spec: ExamProfileSpec = {
+        ...minimalSpec,
+        sections: [
+          {
+            name: "Listening",
+            taskCount: 2,
+            timeLimitMinutes: null,
+            taskTypes: [],
+            topics: [],
+            modality: "audio",
+          },
+          { name: "Reading", taskCount: 2, timeLimitMinutes: null, taskTypes: [], topics: [] },
+        ],
+      };
+      const profile = examProfileFixture(spec, "profile-reassemble");
+      const buckets = buildPlan(spec, "practice");
+      const taskRepo = fakeTaskRepo(seedForBuckets(buckets, "profile-reassemble", spec.language));
+      const testRepo = fakeTestRepo();
+
+      const first = await assembleTest(
+        { taskRepo, testRepo, llm: fakeLlm([]) },
+        { hqId: "hq-reassemble", examProfile: profile, kind: "practice" },
+      );
+      expect(first.spec.refillCount).toBe(0);
+
+      const llm2 = fakeLlm([]);
+      const completeSpy = vi.spyOn(llm2, "complete");
+      const newSpec: TestSpec = await reassembleTest(
+        { taskRepo, llm: llm2 },
+        { test: first, examProfile: profile, hqConfig: null },
+      );
+
+      expect(completeSpy).not.toHaveBeenCalled(); // тёплый банк с первой сборки
+      expect(newSpec.refillCount).toBe(1);
+      expect(newSpec.kind).toBe("practice");
+      expect(newSpec.sections.find((s) => s.name === "Listening")!.modality).toBe("audio");
+      expect(newSpec.sections.find((s) => s.name === "Reading")!.modality).toBeNull();
+      expect(testRepo.rows).toHaveLength(1); // reassembleTest не пишет в БД
+    });
+
+    it("uses a fresh ≤3 llm.complete budget on reassembly, independent from the original assembly", async () => {
+      const spec: ExamProfileSpec = {
+        ...minimalSpec,
+        sections: Array.from({ length: 5 }, (_, i) => ({
+          name: `Section ${i}`,
+          taskCount: 5,
+          timeLimitMinutes: 10,
+          taskTypes: [`type${i}`],
+          topics: [],
+        })),
+      };
+      const profile = examProfileFixture(spec, "profile-reassemble-cap");
+
+      const original = await assembleTest(
+        {
+          taskRepo: fakeTaskRepo(),
+          testRepo: fakeTestRepo(),
+          llm: fakeLlm([batchOf(10, "o0"), batchOf(10, "o1"), batchOf(10, "o2")]),
+        },
+        { hqId: "hq-cap2", examProfile: profile, kind: "practice" },
+      );
+      expect(original.spec.refillCount).toBe(0);
+
+      // Свежий (пустой) банк для реассембли — изолирует проверку кап'а
+      // LLM-бюджета от «перегрева» банка исходной сборкой (D2 overshoot:
+      // генерация кладёт в банк с запасом на MAX_BATCH=10), чтобы все 5
+      // бакетов реально требовали генерации и честно проверяли кап ≤3 заново.
+      const taskRepo2 = fakeTaskRepo();
+      const llm2 = fakeLlm([batchOf(10, "r0"), batchOf(10, "r1"), batchOf(10, "r2")]);
+      const completeSpy = vi.spyOn(llm2, "complete");
+      const refilled = await reassembleTest(
+        { taskRepo: taskRepo2, llm: llm2 },
+        { test: original, examProfile: profile, hqConfig: null },
+      );
+
+      expect(completeSpy).toHaveBeenCalledTimes(3);
+      expect(refilled.refillCount).toBe(1);
     });
   });
 });

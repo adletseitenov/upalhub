@@ -1,6 +1,8 @@
 import type { Llm } from "@/lib/llm";
 import type { ExamProfileSpec } from "@/features/exam-profile/spec";
 import type { StoredExamProfile } from "@/features/exam-profile/service";
+import { resolveActiveSections } from "@/features/exam-profile/selection";
+import type { HqConfig } from "@/features/exam-profile/selection";
 import { generateForBucket, type Bucket } from "@/features/tasks/generate";
 import type { StoredTask, TaskBankRepo } from "@/features/tasks/repo";
 import { testSpecSchema } from "./spec";
@@ -71,6 +73,50 @@ export function buildPlan(spec: ExamProfileSpec, kind: TestKind): Bucket[] {
   return buckets;
 }
 
+/**
+ * Round-robin интерливинг бакетов по секциям (D5), выполняется перед фазой
+ * генерации: секция1-бакет1, секция2-бакет1, ..., секция1-бакет2, ... —
+ * иначе секция с несколькими бакетами (несколько topics) в исходном
+ * плоском порядке способна в одиночку съесть весь бюджет ≤3 вызовов
+ * (MAX_LLM_CALLS_PER_ASSEMBLY), оставив следующие секции без единого
+ * генерационного вызова (пустая секция в тесте — то, что честная сборка
+ * обязана лечить).
+ *
+ * `offset` — с какой секции начинается интерливинг, считается вызывающей
+ * стороной как `refillCount % sectionOrder.length` (D5 ротация): «Дособрать»
+ * без этого каждый раз бил бы бюджет по одним и тем же первым секциям.
+ * `sectionOrder` — activeSections в их естественном порядке (после
+ * hqConfig-фильтрации), не порядок появления бакетов — так пустая (без
+ * единого бакета) активная секция просто не участвует в интерливинге, не
+ * ломая распределение остальных.
+ */
+function interleaveBySection(buckets: Bucket[], sectionOrder: string[], offset: number): Bucket[] {
+  if (sectionOrder.length === 0) return buckets;
+
+  const bySection = new Map<string, Bucket[]>(sectionOrder.map((name) => [name, []]));
+  for (const bucket of buckets) {
+    // Защитно: бакет с именем вне sectionOrder не должен случаться (buildPlan
+    // строится из того же списка секций), но лучше сохранить бакет в своей
+    // группе, чем молча потерять его.
+    if (!bySection.has(bucket.sectionName)) bySection.set(bucket.sectionName, []);
+    bySection.get(bucket.sectionName)!.push(bucket);
+  }
+
+  const n = sectionOrder.length;
+  const shift = offset % n;
+  const rotatedNames = [...sectionOrder.slice(shift), ...sectionOrder.slice(0, shift)];
+  const maxLen = Math.max(0, ...[...bySection.values()].map((b) => b.length));
+
+  const result: Bucket[] = [];
+  for (let col = 0; col < maxLen; col++) {
+    for (const name of rotatedNames) {
+      const bucket = bySection.get(name)?.[col];
+      if (bucket) result.push(bucket);
+    }
+  }
+  return result;
+}
+
 const MAX_LLM_CALLS_PER_ASSEMBLY = 3;
 
 // Обёртка над Llm, которая считает ФАКТИЧЕСКИЕ вызовы .complete (не вызовы
@@ -97,26 +143,48 @@ function budgetedLlm(llm: Llm, max: number): Llm {
 }
 
 /**
- * assembleTest (D3): buildPlan -> select банка по каждому бакету (exact
- * difficulty=FIXED_DIFFICULTY) -> на недобор релакс-фолбэк select с
- * difficulty=null (подхватывает импортированные/сгенерированные задания вне
- * FIXED_DIFFICULTY, acceptance 2.5) -> на оставшийся дефицит генерация
- * (суммарно ≤3 фактических llm.complete на всю сборку, считая через
- * budgetedLlm, а не через число вызовов generateForBucket) -> re-select ->
- * distinct taskIds по секциям -> заморозка spec (снапшот scoring на момент
- * сборки, не ссылка) -> testRepo.insertTest.
+ * buildTestSpec (D3/D5): buildPlan (только по activeSections — hqConfig
+ * решает, какие секции спеки вообще участвуют в сборке) -> round-robin
+ * интерливинг бакетов с ротацией офсета от refillCount -> select банка по
+ * каждому бакету (exact difficulty=FIXED_DIFFICULTY) -> на недобор
+ * релакс-фолбэк select с difficulty=null (подхватывает
+ * импортированные/сгенерированные задания вне FIXED_DIFFICULTY, acceptance
+ * 2.5) -> на оставшийся дефицит генерация (суммарно ≤3 фактических
+ * llm.complete на всю сборку, считая через budgetedLlm, а не через число
+ * вызовов generateForBucket) -> re-select -> distinct taskIds по секциям ->
+ * заморозка spec (plannedCount/modality по секции, snapshot scoring,
+ * refillCount) — не пишет в БД, это общий для assembleTest/reassembleTest
+ * чистый шаг сборки.
  *
  * Исчерпание бюджета — не ошибка сборки: остаток бакетов просто не
  * генерируется (findBucket отдаёт что есть в банке, может быть меньше
- * bucket.count) и тест собирается короче, а не падает.
+ * bucket.count) и тест собирается короче, а не падает (round-robin следит,
+ * чтобы «короче» не значило «секция-сирота с нулём заданий»).
  */
-export async function assembleTest(
-  deps: { taskRepo: TaskBankRepo; testRepo: TestRepo; llm: Llm },
-  args: { hqId: string; examProfile: StoredExamProfile; kind: TestKind },
-): Promise<StoredTest> {
-  const { hqId, examProfile, kind } = args;
+async function buildTestSpec(
+  deps: { taskRepo: TaskBankRepo; llm: Llm },
+  args: {
+    examProfile: StoredExamProfile;
+    kind: TestKind;
+    hqConfig?: HqConfig | null;
+    refillCount?: number;
+  },
+): Promise<TestSpec> {
+  const { examProfile, kind } = args;
   const spec = examProfile.spec;
-  const buckets = buildPlan(spec, kind);
+  const refillCount = args.refillCount ?? 0;
+
+  // D5: resolveActiveSections — единственная точка истины «config ->
+  // активные секции». Невыбранные секции не попадают в план и, ниже, вообще
+  // не попадают в замороженный spec.
+  const activeSections = resolveActiveSections(spec, args.hqConfig);
+  const activeSpec: ExamProfileSpec = { ...spec, sections: activeSections };
+  const rawBuckets = buildPlan(activeSpec, kind);
+
+  const sectionOrder = activeSections.map((section) => section.name);
+  const offset = sectionOrder.length > 0 ? refillCount % sectionOrder.length : 0;
+  const buckets = interleaveBySection(rawBuckets, sectionOrder, offset);
+
   const llm = budgetedLlm(deps.llm, MAX_LLM_CALLS_PER_ASSEMBLY);
 
   let budgetExhausted = false;
@@ -178,11 +246,27 @@ export async function assembleTest(
     sectionTasks.set(bucket.sectionName, existing.concat(found));
   }
 
+  // D5 freeze: Σ bucket.count секции — из rawBuckets (план ДО round-robin
+  // переупорядочивания; порядок для суммы неважен). Ключ — sectionName; имена
+  // секций уникальны (superRefine спеки), поэтому группировка по имени здесь
+  // эквивалентна группировке по индексу секции — но именно по этой причине
+  // (не полагаясь на группировку по индексу вручную) дубли имён не могут
+  // задвоить/потерять план (красная команда).
+  const plannedCountBySection = new Map<string, number>();
+  for (const bucket of rawBuckets) {
+    plannedCountBySection.set(
+      bucket.sectionName,
+      (plannedCountBySection.get(bucket.sectionName) ?? 0) + bucket.count,
+    );
+  }
+
   // D3 шаг 5: distinct taskIds по секциям. Один глобальный Set (не по секции
   // отдельно) — так плоский taskIds всегда РОВНО конкатенация
   // sections[].taskIds, без осиротевших дублей между секциями.
+  // D5: sections строится из activeSections (не spec.sections) — невыбранные
+  // секции вообще не попадают в замороженный spec.
   const seen = new Set<string>();
-  const sections = spec.sections.map((section) => {
+  const sections = activeSections.map((section) => {
     const tasks = sectionTasks.get(section.name) ?? [];
     const taskIds: string[] = [];
     for (const task of tasks) {
@@ -190,24 +274,31 @@ export async function assembleTest(
       seen.add(task.id);
       taskIds.push(task.id);
     }
-    return { name: section.name, taskIds };
+    return {
+      name: section.name,
+      taskIds,
+      plannedCount: plannedCountBySection.get(section.name) ?? 0,
+      modality: section.modality ?? null,
+    };
   });
   const taskIds = sections.flatMap((section) => section.taskIds);
 
   // D3 шаг 6: totalTimeMinutes = сумма section.timeLimitMinutes, если ВСЕ
-  // секции его задают; иначе — spec.totalTimeMinutes (может быть null).
-  const everySectionHasTimeLimit = spec.sections.every(
+  // АКТИВНЫЕ секции его задают; иначе — spec.totalTimeMinutes (может быть
+  // null). Считается по activeSections — исключённая hqConfig'ом секция не
+  // должна влиять на бюджет времени теста, в который она не попала.
+  const everySectionHasTimeLimit = activeSections.every(
     (section) => typeof section.timeLimitMinutes === "number",
   );
   const totalTimeMinutes = everySectionHasTimeLimit
-    ? spec.sections.reduce((sum, section) => sum + (section.timeLimitMinutes as number), 0)
+    ? activeSections.reduce((sum, section) => sum + (section.timeLimitMinutes as number), 0)
     : (spec.totalTimeMinutes ?? null);
 
   // D3 шаг 7: копия scoring на момент сборки (не ссылка на examProfile.spec) —
   // последующий refine профиля не должен задним числом менять уже
   // замороженный тест. scoring — плоский объект из примитивов, поэтому
   // shallow-копии достаточно для полной развязки.
-  const testSpec: TestSpec = testSpecSchema.parse({
+  return testSpecSchema.parse({
     version: 1,
     kind,
     language: spec.language,
@@ -215,7 +306,46 @@ export async function assembleTest(
     taskIds,
     totalTimeMinutes,
     scoringSnapshot: { ...spec.scoring },
+    refillCount,
   });
+}
 
-  return deps.testRepo.insertTest(hqId, kind, testSpec);
+/**
+ * assembleTest (D3/D5): buildTestSpec -> testRepo.insertTest (первая сборка
+ * теста, refillCount по умолчанию 0).
+ */
+export async function assembleTest(
+  deps: { taskRepo: TaskBankRepo; testRepo: TestRepo; llm: Llm },
+  args: {
+    hqId: string;
+    examProfile: StoredExamProfile;
+    kind: TestKind;
+    hqConfig?: HqConfig | null;
+    refillCount?: number;
+  },
+): Promise<StoredTest> {
+  const testSpec = await buildTestSpec(deps, args);
+  return deps.testRepo.insertTest(args.hqId, args.kind, testSpec);
+}
+
+/**
+ * reassembleTest (D5 «Дособрать»): пере-прогон buildTestSpec для уже
+ * существующего теста — kind берётся из его замороженного spec, refillCount
+ * инкрементируется (двигает ротацию round-robin офсета на следующий заход),
+ * бюджет LLM свежий (budgetedLlm внутри buildTestSpec заново оборачивает
+ * deps.llm, кап снова ≤3). НЕ пишет в БД: атомарную замену (RPC,
+ * TOCTOU-фикс красной команды) делает T6-роут через
+ * TestRepo.replaceTestSpecIfNoAttempts.
+ */
+export async function reassembleTest(
+  deps: { taskRepo: TaskBankRepo; llm: Llm },
+  args: { test: StoredTest; examProfile: StoredExamProfile; hqConfig?: HqConfig | null },
+): Promise<TestSpec> {
+  const { test, examProfile, hqConfig } = args;
+  return buildTestSpec(deps, {
+    examProfile,
+    kind: test.spec.kind,
+    hqConfig,
+    refillCount: (test.spec.refillCount ?? 0) + 1,
+  });
 }

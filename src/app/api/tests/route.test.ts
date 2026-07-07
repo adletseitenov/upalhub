@@ -191,4 +191,102 @@ describe("POST /api/tests", () => {
   it("exports maxDuration=60 for the long-running assembly path", () => {
     expect(maxDuration).toBe(60);
   });
+
+  // D5: study_hqs.config колонки ещё нет в БД до миграции T5 — hq без поля
+  // config ведёт себя как legacy (валидация пропускается), что уже покрыто
+  // тестом выше ("assembles a test..." использует studyHq без config).
+
+  it("422s with reconfigure_needed when hq.config fails validateHqConfig against the profile spec", async () => {
+    mockedSupabaseServer.mockResolvedValue(
+      fakeSupabase({
+        user: { id: "u-badconfig" },
+        studyHq: {
+          data: {
+            id: "hq-1",
+            exam_profile_id: "profile-1",
+            config: { selectedSectionNames: ["Несуществующая секция"] },
+          },
+          error: null,
+        },
+        examProfile: { data: validProfileRow(), error: null },
+      }) as never,
+    );
+
+    const res = await POST(postRequest({ hqId: HQ_ID, kind: "diagnostic" }));
+
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: "reconfigure_needed" });
+    expect(mockedAssembleTest).not.toHaveBeenCalled();
+  });
+
+  it("passes a non-empty, valid hq.config through to assembleTest as hqConfig", async () => {
+    mockedSupabaseServer.mockResolvedValue(
+      fakeSupabase({
+        user: { id: "u-goodconfig" },
+        studyHq: {
+          data: {
+            id: "hq-1",
+            exam_profile_id: "profile-1",
+            config: { selectedSectionNames: ["Математика"] },
+          },
+          error: null,
+        },
+        examProfile: { data: validProfileRow(), error: null },
+      }) as never,
+    );
+    mockedAssembleTest.mockResolvedValue({
+      id: "test-1",
+      hqId: "hq-1",
+      kind: "diagnostic",
+      spec: {
+        version: 1,
+        kind: "diagnostic",
+        language: "kk",
+        sections: [{ name: "Математика", taskIds: ["t1"] }],
+        taskIds: ["t1"],
+        totalTimeMinutes: null,
+        scoringSnapshot: { scaleMin: 0, scaleMax: 140, unit: "баллов" },
+      },
+    });
+
+    const res = await POST(postRequest({ hqId: HQ_ID, kind: "diagnostic" }));
+
+    expect(res.status).toBe(200);
+    expect(mockedAssembleTest).toHaveBeenCalledTimes(1);
+    const [, args] = mockedAssembleTest.mock.calls[0];
+    expect(args).toMatchObject({ hqConfig: { selectedSectionNames: ["Математика"] } });
+  });
+
+  it("treats an unparsable (e.g. array) hq.config as legacy null instead of 500ing", async () => {
+    mockedSupabaseServer.mockResolvedValue(
+      fakeSupabase({
+        user: { id: "u-arrayconfig" },
+        studyHq: {
+          data: { id: "hq-1", exam_profile_id: "profile-1", config: ["not", "an", "object"] },
+          error: null,
+        },
+        examProfile: { data: validProfileRow(), error: null },
+      }) as never,
+    );
+    mockedAssembleTest.mockResolvedValue({
+      id: "test-1",
+      hqId: "hq-1",
+      kind: "diagnostic",
+      spec: {
+        version: 1,
+        kind: "diagnostic",
+        language: "kk",
+        sections: [{ name: "Математика", taskIds: ["t1"] }],
+        taskIds: ["t1"],
+        totalTimeMinutes: null,
+        scoringSnapshot: { scaleMin: 0, scaleMax: 140, unit: "баллов" },
+      },
+    });
+
+    const res = await POST(postRequest({ hqId: HQ_ID, kind: "diagnostic" }));
+
+    expect(res.status).toBe(200);
+    const [, args] = mockedAssembleTest.mock.calls[0];
+    expect(args).toMatchObject({ hqConfig: null });
+  });
 });
