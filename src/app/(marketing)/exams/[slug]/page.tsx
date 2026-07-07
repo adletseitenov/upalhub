@@ -2,10 +2,69 @@ import { notFound } from "next/navigation";
 import { z } from "zod";
 import { getTranslations } from "next-intl/server";
 import { supabaseServer } from "@/lib/supabase/server";
-import { examProfileSpecSchema, sourceRefSchema } from "@/features/exam-profile/spec";
+import {
+  examProfileSpecSchema,
+  sourceRefSchema,
+  type ExamSection,
+  type SelectionGroup,
+} from "@/features/exam-profile/spec";
 import { LocaleSwitcher } from "@/components/locale-switcher";
 import { PrepareButton } from "@/components/prepare-button";
 import { RefineForm } from "@/components/refine-form";
+
+type Translator = Awaited<ReturnType<typeof getTranslations>>;
+
+// D4/Task 10: секция может входить в несколько selectionGroups (редко, но
+// целостность спеки этого не запрещает) — рендерим бейдж на каждую
+// совпавшую группу, компактно (badge на карточке, а не подзаголовок группы —
+// подзаголовок не подходит, т.к. одна и та же секция может уйти в неск.
+// group/variant блоков, а группа физически не «владеет» отдельным блоком в
+// текущей верстке).
+function SectionCard({
+  section,
+  selectionGroups,
+  t,
+  tAudio,
+}: {
+  section: ExamSection;
+  selectionGroups: SelectionGroup[];
+  t: Translator;
+  tAudio: Translator;
+}) {
+  const matchingGroups = selectionGroups.filter((g) => g.sectionNames.includes(section.name));
+  const isAudio = section.modality === "audio";
+  return (
+    <li className="rounded border p-3">
+      <p className="font-medium">
+        {section.name}
+        {matchingGroups.map((g) => (
+          <span
+            key={g.key}
+            className="ml-2 rounded bg-gray-100 px-2 py-0.5 text-xs font-normal text-gray-600"
+          >
+            {t("selectionBadge", { n: g.chooseCount, m: g.sectionNames.length })}
+          </span>
+        ))}
+        {isAudio && (
+          <span className="ml-2 rounded bg-gray-100 px-2 py-0.5 text-xs font-normal text-gray-600">
+            {tAudio("sectionBadge")}
+          </span>
+        )}
+      </p>
+      <p className="text-sm text-gray-500">
+        {[
+          section.taskCount ? `${section.taskCount} ${t("tasks")}` : null,
+          section.timeLimitMinutes ? `${section.timeLimitMinutes} ${t("minutes")}` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+      </p>
+      {section.topics.length > 0 && (
+        <p className="text-sm text-gray-500">{section.topics.join(", ")}</p>
+      )}
+    </li>
+  );
+}
 
 export default async function ExamProfilePage({
   params,
@@ -14,6 +73,7 @@ export default async function ExamProfilePage({
 }) {
   const { slug } = await params;
   const t = await getTranslations("profile");
+  const tAudio = await getTranslations("audio");
   const supabase = await supabaseServer();
   const { data: row } = await supabase
     .from("exam_profiles")
@@ -29,6 +89,16 @@ export default async function ExamProfilePage({
   const { data: userData } = await supabase.auth.getUser();
   const isCreator = userData.user != null && row.created_by === userData.user.id;
 
+  // Task 10 (D4): вариантный профиль (напр. НИШ физ-мат/хим-био) — секции
+  // группируются по вариантам; секция может входить в несколько вариантов
+  // сразу (это спектр, не выбор — рендерим её в каждом). Секции, не
+  // упомянутые ни в одном варианте, идут общим блоком сверху. Плоский
+  // профиль (variants=[]) — старая нерегруппированная верстка (регресс
+  // запрещён), просто с добавленными бейджами (аддитивно, старые профили без
+  // selectionGroups/modality ничего нового не показывают).
+  const namesInVariants = new Set(spec.variants.flatMap((v) => v.sectionNames));
+  const commonSections = spec.sections.filter((s) => !namesInVariants.has(s.name));
+
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-6 p-6">
       <header className="flex items-center justify-between">
@@ -40,24 +110,66 @@ export default async function ExamProfilePage({
 
       <section>
         <h2 className="mb-2 font-semibold">{t("sections")}</h2>
-        <ul className="flex flex-col gap-2">
-          {spec.sections.map((s) => (
-            <li key={s.name} className="rounded border p-3">
-              <p className="font-medium">{s.name}</p>
-              <p className="text-sm text-gray-500">
-                {[
-                  s.taskCount ? `${s.taskCount} ${t("tasks")}` : null,
-                  s.timeLimitMinutes ? `${s.timeLimitMinutes} ${t("minutes")}` : null,
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </p>
-              {s.topics.length > 0 && (
-                <p className="text-sm text-gray-500">{s.topics.join(", ")}</p>
-              )}
-            </li>
-          ))}
-        </ul>
+        {spec.variants.length === 0 ? (
+          <ul className="flex flex-col gap-2">
+            {spec.sections.map((s) => (
+              <SectionCard
+                key={s.name}
+                section={s}
+                selectionGroups={spec.selectionGroups}
+                t={t}
+                tAudio={tAudio}
+              />
+            ))}
+          </ul>
+        ) : (
+          <div className="flex flex-col gap-4">
+            {commonSections.length > 0 && (
+              <div>
+                <h3 className="mb-2 text-sm font-semibold text-gray-600">
+                  {t("commonSections")}
+                </h3>
+                <ul className="flex flex-col gap-2">
+                  {commonSections.map((s) => (
+                    <SectionCard
+                      key={s.name}
+                      section={s}
+                      selectionGroups={spec.selectionGroups}
+                      t={t}
+                      tAudio={tAudio}
+                    />
+                  ))}
+                </ul>
+              </div>
+            )}
+            <div>
+              <h3 className="mb-2 text-sm font-semibold text-gray-600">{t("variantsTitle")}</h3>
+              <div className="flex flex-col gap-4">
+                {spec.variants.map((variant) => {
+                  const variantSections = variant.sectionNames
+                    .map((name) => spec.sections.find((s) => s.name === name))
+                    .filter((s): s is (typeof spec.sections)[number] => s != null);
+                  return (
+                    <div key={variant.key}>
+                      <h4 className="mb-2 font-medium">{variant.label}</h4>
+                      <ul className="flex flex-col gap-2">
+                        {variantSections.map((s) => (
+                          <SectionCard
+                            key={s.name}
+                            section={s}
+                            selectionGroups={spec.selectionGroups}
+                            t={t}
+                            tAudio={tAudio}
+                          />
+                        ))}
+                      </ul>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
       </section>
 
       <section className="text-sm">

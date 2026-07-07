@@ -39,7 +39,10 @@
     "refinePlaceholder": "Текст реального варианта экзамена…",
     "refineSubmit": "Уточнить профиль",
     "refining": "Уточняем…",
-    "error": "Что-то пошло не так, попробуйте ещё раз."
+    "error": "Что-то пошло не так, попробуйте ещё раз.",
+    "variantsTitle": "Варианты",
+    "commonSections": "Общие секции",
+    "selectionBadge": "на выбор ({n} из {m})"
   },
   "testRunner": {
     "start": "Начать",
