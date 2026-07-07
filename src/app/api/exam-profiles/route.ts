@@ -68,6 +68,7 @@ export async function POST(request: Request) {
       // Best-effort: репорт фиксируется для аналитики/дедупа «не тот
       // экзамен», но его провал (в т.ч. RLS — таблица без update-политики,
       // см. миграцию 20260708120100) НЕ должен ронять успешный ответ роута.
+      // First-report-wins: ignoreDuplicates=true → ON CONFLICT DO NOTHING.
       try {
         const { error: reportError } = await supabase.from("exam_profile_reports").upsert(
           {
@@ -76,7 +77,7 @@ export async function POST(request: Request) {
             clarification: clarification ?? null,
             new_slug: result.profile.slug,
           },
-          { onConflict: "reported_profile_id,user_id" },
+          { onConflict: "reported_profile_id,user_id", ignoreDuplicates: true },
         );
         if (reportError) {
           console.warn("exam_profile_reports upsert failed:", reportError);

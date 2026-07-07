@@ -199,7 +199,7 @@ describe("POST /api/exam-profiles", () => {
         clarification: "это казахстанский экзамен",
         new_slug: "ent-2027",
       });
-      expect(options).toEqual({ onConflict: "reported_profile_id,user_id" });
+      expect(options).toEqual({ onConflict: "reported_profile_id,user_id", ignoreDuplicates: true });
     });
 
     it("falls back to the normal path when excludeSlug does not resolve to an existing profile", async () => {
