@@ -6,6 +6,9 @@ import { z } from "zod";
 
 type Row = Database["public"]["Tables"]["exam_profiles"]["Row"];
 
+const originSchema = z.enum(["ai_research", "uploaded", "manual"]);
+const trustSchema = z.enum(["ai_draft", "data_refined", "verified"]);
+
 function rowToProfile(row: Row): StoredExamProfile {
   return {
     id: row.id,
@@ -14,8 +17,8 @@ function rowToProfile(row: Row): StoredExamProfile {
     language: row.language,
     spec: examProfileSpecSchema.parse(row.spec),
     sources: z.array(sourceRefSchema).parse(row.sources ?? []),
-    origin: row.origin as StoredExamProfile["origin"],
-    trust: row.trust as StoredExamProfile["trust"],
+    origin: originSchema.parse(row.origin),
+    trust: trustSchema.parse(row.trust),
   };
 }
 
