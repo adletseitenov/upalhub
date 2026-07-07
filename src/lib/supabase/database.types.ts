@@ -98,6 +98,49 @@ export type Database = {
           },
         ]
       }
+      // stage25: manual until regen — миграция 20260708120100_exam_profile_reports.sql
+      exam_profile_reports: {
+        Row: {
+          clarification: string | null
+          created_at: string
+          id: string
+          new_slug: string | null
+          reported_profile_id: string
+          user_id: string
+        }
+        Insert: {
+          clarification?: string | null
+          created_at?: string
+          id?: string
+          new_slug?: string | null
+          reported_profile_id: string
+          user_id: string
+        }
+        Update: {
+          clarification?: string | null
+          created_at?: string
+          id?: string
+          new_slug?: string | null
+          reported_profile_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "exam_profile_reports_reported_profile_id_fkey"
+            columns: ["reported_profile_id"]
+            isOneToOne: false
+            referencedRelation: "exam_profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "exam_profile_reports_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       exam_profiles: {
         Row: {
           created_at: string
@@ -421,6 +464,8 @@ export type Database = {
       }
       study_hqs: {
         Row: {
+          // stage25: manual until regen — миграция 20260708120000_study_hqs_config.sql
+          config: Json
           created_at: string
           exam_date: string | null
           exam_profile_id: string
@@ -430,6 +475,7 @@ export type Database = {
           user_id: string
         }
         Insert: {
+          config?: Json
           created_at?: string
           exam_date?: string | null
           exam_profile_id: string
@@ -439,6 +485,7 @@ export type Database = {
           user_id: string
         }
         Update: {
+          config?: Json
           created_at?: string
           exam_date?: string | null
           exam_profile_id?: string
@@ -631,7 +678,14 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      // stage25: manual until regen — миграция 20260708120200_replace_test_spec_rpc.sql
+      replace_test_spec_if_no_attempts: {
+        Args: {
+          p_test_id: string
+          p_spec: Json
+        }
+        Returns: boolean
+      }
     }
     Enums: {
       [_ in never]: never

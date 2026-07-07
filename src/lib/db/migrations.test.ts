@@ -28,6 +28,7 @@ const EXPECTED_TABLES = [
   "hub_stars",
   "tasks",
   "study_hqs",
+  "exam_profile_reports",
   "tests",
   "attempts",
   "attempt_items",
@@ -132,5 +133,92 @@ describe("supabase migrations", () => {
           ('${profileId}', 'reading', 'topic-a', 1, 'ru', '{}'::jsonb, '{}'::jsonb, null, 'ai', 'dup-hash-value')
       `),
     ).rejects.toThrow();
+  });
+
+  // --- Stage 2.5 Task 5 -----------------------------------------------------
+
+  async function insertUser(email: string): Promise<string> {
+    const res = await db.query<{ id: string }>(
+      `insert into auth.users (id, email) values (gen_random_uuid(), '${email}') returning id`,
+    );
+    return res.rows[0].id;
+  }
+
+  async function insertProfile(slug: string): Promise<string> {
+    const res = await db.query<{ id: string }>(
+      `insert into public.exam_profiles (slug, title, language, spec, origin)
+       values ('${slug}', 'Stage25 T5 Test', 'ru', '{}'::jsonb, 'manual')
+       returning id`,
+    );
+    return res.rows[0].id;
+  }
+
+  it("study_hqs.config defaults to '{}' and rejects non-object jsonb", async () => {
+    const userId = await insertUser("s25t5-config@example.com");
+    const profileId = await insertProfile("s25t5-config-test");
+
+    const hq = await db.query<{ config: unknown }>(
+      `insert into public.study_hqs (user_id, exam_profile_id) values ('${userId}', '${profileId}') returning config`,
+    );
+    expect(hq.rows[0].config).toEqual({});
+
+    await expect(
+      db.exec(
+        `insert into public.study_hqs (user_id, exam_profile_id, config) values ('${userId}', '${profileId}', '[]'::jsonb)`,
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("exam_profile_reports enforces unique(reported_profile_id, user_id)", async () => {
+    const userId = await insertUser("s25t5-report@example.com");
+    const profileId = await insertProfile("s25t5-report-test");
+
+    await db.exec(`
+      insert into public.exam_profile_reports (reported_profile_id, user_id, clarification, new_slug)
+      values ('${profileId}', '${userId}', 'не тот экзамен', 'other-exam')
+    `);
+
+    await expect(
+      db.exec(`
+        insert into public.exam_profile_reports (reported_profile_id, user_id, clarification, new_slug)
+        values ('${profileId}', '${userId}', 'снова не тот', 'yet-another-exam')
+      `),
+    ).rejects.toThrow();
+  });
+
+  it("replace_test_spec_if_no_attempts replaces spec atomically only when no attempts exist", async () => {
+    const userId = await insertUser("s25t5-rpc@example.com");
+    const profileId = await insertProfile("s25t5-rpc-test");
+    const hq = await db.query<{ id: string }>(
+      `insert into public.study_hqs (user_id, exam_profile_id) values ('${userId}', '${profileId}') returning id`,
+    );
+    const hqId = hq.rows[0].id;
+    const test = await db.query<{ id: string }>(
+      `insert into public.tests (hq_id, kind, spec) values ('${hqId}', 'diagnostic', '{"v":0}'::jsonb) returning id`,
+    );
+    const testId = test.rows[0].id;
+
+    // без попыток -> true, spec заменён
+    const noAttemptResult = await db.query<{ replace_test_spec_if_no_attempts: boolean | null }>(
+      `select public.replace_test_spec_if_no_attempts('${testId}', '{"v":1}'::jsonb)`,
+    );
+    expect(noAttemptResult.rows[0].replace_test_spec_if_no_attempts).toBe(true);
+    const afterFirst = await db.query<{ spec: unknown }>(
+      `select spec from public.tests where id = '${testId}'`,
+    );
+    expect(afterFirst.rows[0].spec).toEqual({ v: 1 });
+
+    // с попыткой -> false/null, spec НЕ изменён
+    await db.exec(
+      `insert into public.attempts (test_id, user_id) values ('${testId}', '${userId}')`,
+    );
+    const withAttemptResult = await db.query<{ replace_test_spec_if_no_attempts: boolean | null }>(
+      `select public.replace_test_spec_if_no_attempts('${testId}', '{"v":2}'::jsonb)`,
+    );
+    expect(withAttemptResult.rows[0].replace_test_spec_if_no_attempts).toBeFalsy();
+    const afterSecond = await db.query<{ spec: unknown }>(
+      `select spec from public.tests where id = '${testId}'`,
+    );
+    expect(afterSecond.rows[0].spec).toEqual({ v: 1 });
   });
 });

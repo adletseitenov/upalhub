@@ -20,15 +20,22 @@ export interface ExamProfileRepo {
   insert(p: NewExamProfile): Promise<StoredExamProfile>;
 }
 
+// D3/Task5: opts аддитивны — старые вызовы (без opts) ведут себя как раньше.
+// slugOverride — reroll-путь (Task5) передаёт уже посчитанный
+// slug-guard'ом слаг (см. ensureRerollSlug в slug.ts), чтобы не пересчитывать
+// slugifyExamQuery(rawQuery) здесь заново (rawQuery для reroll — это
+// refinedQuery, а не исходный отвергнутый запрос). avoid прокидывается в
+// researchExam (T3) — LLM избегает переисследовать отвергнутый экзамен.
 export async function findOrCreateExamProfile(
   deps: { llm: Llm; search: WebSearch; repo: ExamProfileRepo },
   rawQuery: string,
+  opts?: { slugOverride?: string; avoid?: { name: string; country?: string | null } },
 ): Promise<{ profile: StoredExamProfile; created: boolean }> {
-  const slug = slugifyExamQuery(rawQuery);
+  const slug = opts?.slugOverride ?? slugifyExamQuery(rawQuery);
   const existing = await deps.repo.findBySlug(slug);
   if (existing) return { profile: existing, created: false };
 
-  const { spec, sources } = await researchExam(deps, rawQuery);
+  const { spec, sources } = await researchExam(deps, rawQuery, { avoid: opts?.avoid });
   const profile = await deps.repo.insert({
     slug,
     title: spec.examName,
