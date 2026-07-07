@@ -27,6 +27,9 @@ export async function POST(request: Request) {
     .eq("slug", parsed.data.slug)
     .maybeSingle();
   if (!row) return NextResponse.json({ error: "not_found" }, { status: 404 });
+  if (row.created_by !== data.user.id) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
 
   const current = examProfileSpecSchema.parse(row.spec);
   const refined = await refineExamSpec({ llm: createLlm() }, current, parsed.data.sampleText);
@@ -35,6 +38,7 @@ export async function POST(request: Request) {
     .from("exam_profiles")
     .update({ spec: refined as unknown as Json, origin: "uploaded" })
     .eq("slug", parsed.data.slug)
+    .eq("created_by", data.user.id)
     .select("id");
   if (error) throw error;
   if (!updated || updated.length === 0) {
