@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **СТАТУС 2026-07-07:** Tasks 1–8 — ✅ выполнены субагентами (11+ коммитов, 40 юнит-тестов, CI зелёный; финальное ревью пройдено, хардненинг применён: ужесточение RLS exam_profiles, unique-индекс study_hqs, https-only источники + safeParse на публичной странице, таймаут fetchPage). Две новые миграции ждут `db push` в Task 10. ⏸ Tasks 9–10 требуют: TAVILY_API_KEY, Supabase env в .env.local, ключи в Vercel. Бэклог этапа 2 (из финал-ревью): per-user rate limit на LLM-роуты; route-level тесты 401/400/403/404; root middleware для session refresh; продуктовое решение — когда trust повышается до data_refined.
+
 **Goal:** Сердце продукта: пользователь называет любой экзамен → AI ищет его в интернете → структурированный профиль с источниками сохраняется в библиотеку → страница профиля → кнопка «Готовиться» кладёт экзамен в штаб.
 
 **Architecture:** Чистое ядро в `src/features/exam-profile/` (zod-схема профиля, slug, research-пайплайн, сервис) зависит только от адаптеров `lib/llm`/`lib/search` и интерфейса репозитория — всё тестируется на fake'ах без сети. Тонкий API-route (auth-gated, `maxDuration=60`) и два экрана: форма на главной и `/exams/[slug]`. Живые ключи нужны только eval-харнессу и smoke-тесту.
@@ -1174,7 +1176,15 @@ describe("exam profile quality eval (live)", () => {
 - [ ] **Step 2:** `npm run eval:profiles` → все 4 экзамена прошли; открыть `evals/exam-profiles/out/*.json`, глазами проверить адекватность (особенно ЕНТ: секции, шкала 140, казахский контекст). При слабом качестве повторить с другими `LLM_MODEL`-кандидатами и выбрать лучший по цене/качеству; решение записать в Decision Points мастер-плана.
 - [ ] **Step 3:** Локальный e2e: `npm run dev` → войти → на главной ввести «IELTS Academic» → дождаться профиля → «Готовиться» → экзамен в штабе.
 - [ ] **Step 4:** Прод: добавить `OPENROUTER_API_KEY`, `LLM_MODEL`, `TAVILY_API_KEY` в Vercel (дашборд → Settings → Environment Variables; сделает Дияр или основатель) → redeploy → повторить e2e на https://upalhub.vercel.app.
-- [ ] **Step 5:** Обновить статус-блок этого плана и мастер-плана; commit + push.
+- [ ] **Step 5: Smoke-чеклист (обязателен — компенсирует отложенные тесты, из финального ревью):**
+  - anon без сессии → 401 на `POST /api/exam-profiles` И `POST /api/exam-profiles/refine`;
+  - refine чужого профиля → 403 (не тратит LLM);
+  - двойной клик «Готовиться» → в штабе одна строка (unique-индекс);
+  - повторный research того же экзамена → `created:false`, LLM не вызывается;
+  - `db push` применил обе новые миграции (tighten RLS + unique index) без конфликтов;
+  - длинная сессия: вход → 1+ час → действие (проверка отсутствия root-middleware, N6).
+
+- [ ] **Step 6:** Обновить статус-блок этого плана и мастер-плана; commit + push.
 
 ---
 
