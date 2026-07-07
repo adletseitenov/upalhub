@@ -35,6 +35,10 @@ function clamp(value: number, min: number, max: number): number {
  * scaleScore — чистая функция (D5). raw/total -> линейная интерполяция в
  * [scaleMin, scaleMax] -> округление к шагу (default: band=0.5, иначе 1) ->
  * clamp. total===0 -> scaleMin (без деления на ноль).
+ *
+ * Rounding is anchored at scaleMin: we round the offset from scaleMin,
+ * not the absolute linear value. This ensures all valid scores are at
+ * scaleMin + k*step for non-negative integer k.
  */
 export function scaleScore(raw: number, total: number, snap: ScoringSnapshot): number {
   const { scaleMin, scaleMax, unit, step } = snap;
@@ -42,6 +46,6 @@ export function scaleScore(raw: number, total: number, snap: ScoringSnapshot): n
 
   const resolvedStep = step ?? (unit === "band" ? DEFAULT_STEP_BAND : DEFAULT_STEP_LINEAR);
   const linear = scaleMin + (raw / total) * (scaleMax - scaleMin);
-  const rounded = roundToStep(linear, resolvedStep);
-  return clamp(rounded, scaleMin, scaleMax);
+  const offset = roundToStep(linear - scaleMin, resolvedStep);
+  return clamp(scaleMin + offset, scaleMin, scaleMax);
 }

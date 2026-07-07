@@ -140,4 +140,25 @@ describe("scaleScore edge behavior", () => {
     // must be a multiple of 0.5
     expect(Math.round(result * 2)).toBe(result * 2);
   });
+
+  it("anchors step rounding at scaleMin (non-multiple scaleMin)", () => {
+    const snap = scoringSnapshotSchema.parse({
+      scaleMin: 7,
+      scaleMax: 103,
+      unit: "баллы",
+      step: 4,
+    });
+    expect(scaleScore(0, 10, snap)).toBe(7);     // all-unanswered -> scaleMin
+    expect(scaleScore(10, 10, snap)).toBe(103);  // all-correct -> scaleMax
+  });
+
+  it("pins half-down tie on default step=1 point scale", () => {
+    const snap = scoringSnapshotSchema.parse({
+      scaleMin: 0,
+      scaleMax: 140,
+      unit: "баллы",
+    });
+    // linear = 0 + (1/8)*140 = 17.5 -> half-down -> 17
+    expect(scaleScore(1, 8, snap)).toBe(17);
+  });
 });
