@@ -25,6 +25,9 @@ vi.mock("@/features/hq/recompute", () => ({
 vi.mock("@/features/knowledge/repo", () => ({
   supabaseKnowledgeRepo: vi.fn(() => ({ __tag: "knowledge-repo" })),
 }));
+vi.mock("@/features/plan/repo", () => ({
+  supabasePlanRepo: vi.fn(() => ({ __tag: "plan-repo" })),
+}));
 
 import { supabaseServer } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";

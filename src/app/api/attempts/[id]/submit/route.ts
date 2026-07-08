@@ -9,6 +9,7 @@ import type { StoredTask } from "@/features/tasks/repo";
 import type { Database } from "@/lib/supabase/database.types";
 import { recomputeHqInsights, supabaseHqReader } from "@/features/hq/recompute";
 import { supabaseKnowledgeRepo } from "@/features/knowledge/repo";
+import { supabasePlanRepo } from "@/features/plan/repo";
 
 type TaskRow = Database["public"]["Tables"]["tasks"]["Row"];
 
@@ -96,7 +97,11 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
   // подтвердил ownership выше) достаточен — admin-клиент здесь не нужен.
   try {
     await recomputeHqInsights(
-      { hqReader: supabaseHqReader(supabase), knowledgeRepo: supabaseKnowledgeRepo(supabase) },
+      {
+        hqReader: supabaseHqReader(supabase),
+        knowledgeRepo: supabaseKnowledgeRepo(supabase),
+        planRepo: supabasePlanRepo(supabase),
+      },
       { hqId: test.hqId, now },
     );
   } catch (err) {

@@ -4,6 +4,14 @@ import { supabaseServer } from "@/lib/supabase/server";
 import type { Database, Json } from "@/lib/supabase/database.types";
 import { examProfileSpecSchema } from "@/features/exam-profile/spec";
 import { hqConfigSchema, validateHqConfig, type HqConfig } from "@/features/exam-profile/selection";
+import { recomputeHqInsights, supabaseHqReader } from "@/features/hq/recompute";
+import { supabaseKnowledgeRepo } from "@/features/knowledge/repo";
+import { supabasePlanRepo } from "@/features/plan/repo";
+
+// D7 🔴: смена config/exam_date (и будущего target, T8) регенит план/прогноз
+// — оркестратор многошаговый (карта+план), тот же maxDuration=60, что и у
+// submit-хука/ручного recompute-роута.
+export const maxDuration = 60;
 
 // D1/Task5: расширение финала онбординг-визарда. Старый body {examProfileId}
 // остаётся валидным (config/examDate — optional, отсутствие обеих не меняет
@@ -95,6 +103,22 @@ export async function POST(request: Request) {
         .update(updatePayload)
         .eq("id", existing.id);
       if (updateError) throw updateError;
+
+      // 🔴 D7: смена config/exam_date (и, с T8, target) регенит план/прогноз
+      // — best-effort, сбой пересчёта НЕ должен ронять уже успешный UPDATE
+      // ответа клиенту (тот же паттерн try/catch, что и submit-хук).
+      try {
+        await recomputeHqInsights(
+          {
+            hqReader: supabaseHqReader(supabase),
+            knowledgeRepo: supabaseKnowledgeRepo(supabase),
+            planRepo: supabasePlanRepo(supabase),
+          },
+          { hqId: existing.id, now: new Date() },
+        );
+      } catch (err) {
+        console.warn(`study-hqs: recompute failed for hq=${existing.id}`, err);
+      }
     }
     return NextResponse.json({ id: existing.id, existed: true });
   }

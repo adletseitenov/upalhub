@@ -3,6 +3,7 @@ import { supabaseServer } from "@/lib/supabase/server";
 import { recomputeHqInsights, supabaseHqReader } from "@/features/hq/recompute";
 import { recomputeLimiter } from "@/features/hq/recompute-limiter";
 import { supabaseKnowledgeRepo } from "@/features/knowledge/repo";
+import { supabasePlanRepo } from "@/features/plan/repo";
 
 // D7: пересчёт может задеть несколько таблиц (карта; в T4/T5 — план и
 // прогноз) без единого LLM-вызова, но всё равно многошаговый — тот же
@@ -39,7 +40,11 @@ export async function POST(_request: Request, { params }: { params: Promise<{ hq
   }
 
   await recomputeHqInsights(
-    { hqReader: supabaseHqReader(supabase), knowledgeRepo: supabaseKnowledgeRepo(supabase) },
+    {
+      hqReader: supabaseHqReader(supabase),
+      knowledgeRepo: supabaseKnowledgeRepo(supabase),
+      planRepo: supabasePlanRepo(supabase),
+    },
     { hqId, now: new Date() },
   );
 

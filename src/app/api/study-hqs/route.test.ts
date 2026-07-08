@@ -3,11 +3,27 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/supabase/server", () => ({
   supabaseServer: vi.fn(),
 }));
+// D7 🔴: UPDATE-ветка теперь best-effort зовёт recomputeHqInsights — мокаем
+// его целиком (тот же паттерн, что и submit/recompute route.test.ts),
+// иначе реальный оркестратор наткнулся бы на fakeSupabase этого файла (его
+// study_hqs-стаб — очередь под find/update, не под доп. select recompute).
+vi.mock("@/features/hq/recompute", () => ({
+  recomputeHqInsights: vi.fn(),
+  supabaseHqReader: vi.fn(() => ({ __tag: "hq-reader" })),
+}));
+vi.mock("@/features/knowledge/repo", () => ({
+  supabaseKnowledgeRepo: vi.fn(() => ({ __tag: "knowledge-repo" })),
+}));
+vi.mock("@/features/plan/repo", () => ({
+  supabasePlanRepo: vi.fn(() => ({ __tag: "plan-repo" })),
+}));
 
 import { supabaseServer } from "@/lib/supabase/server";
+import { recomputeHqInsights } from "@/features/hq/recompute";
 import { POST } from "./route";
 
 const mockedSupabaseServer = vi.mocked(supabaseServer);
+const mockedRecompute = vi.mocked(recomputeHqInsights);
 
 // Валидный по RFC 9562 uuid — паттерн src/app/api/tests/route.test.ts.
 const PROFILE_ID = "11111111-1111-4111-8111-111111111111";
@@ -108,6 +124,7 @@ function variantProfileSpec() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockedRecompute.mockResolvedValue(undefined);
 });
 
 describe("POST /api/study-hqs", () => {
@@ -177,6 +194,8 @@ describe("POST /api/study-hqs", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ id: HQ_ID, existed: true });
     expect(captured.updates).toHaveLength(0);
+    // No actual UPDATE happened (nothing changed) -> recompute must not fire.
+    expect(mockedRecompute).not.toHaveBeenCalled();
   });
 
   it("old body {examProfileId} is valid: no existing hq -> insert with minimal payload, existed:false", async () => {
@@ -196,6 +215,9 @@ describe("POST /api/study-hqs", () => {
     expect(await res.json()).toEqual({ id: "new-hq", existed: false });
     expect(captured.inserts).toHaveLength(1);
     expect(captured.inserts[0]).toEqual({ user_id: "user-1", exam_profile_id: PROFILE_ID });
+    // Task4 scope is the UPDATE-branch only (D7 point 3); a brand-new hq has
+    // no prior knowledge to recompute from.
+    expect(mockedRecompute).not.toHaveBeenCalled();
   });
 
   it("existing hq + config only (examDate absent) -> update payload has config but no exam_date key", async () => {
@@ -309,5 +331,65 @@ describe("POST /api/study-hqs", () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ id: "raced-hq", existed: true });
+  });
+});
+
+// D7 🔴: UPDATE-ветка (existed:true) best-effort зовёт recomputeHqInsights
+// после успешного UPDATE — регенит план/прогноз при смене config/exam_date.
+describe("POST /api/study-hqs: recompute on UPDATE (D7)", () => {
+  it("calls recomputeHqInsights with the updated hq's id after a successful config UPDATE", async () => {
+    stubSupabase({
+      user: { id: "user-1" },
+      examProfile: { data: { spec: variantProfileSpec() }, error: null },
+      studyHqQueue: [
+        { data: { id: HQ_ID }, error: null }, // find-existing
+        { data: null, error: null }, // update
+      ],
+    });
+
+    const res = await POST(
+      postRequest({
+        examProfileId: PROFILE_ID,
+        config: { variantKey: "phys", selectedSectionNames: [] },
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockedRecompute).toHaveBeenCalledTimes(1);
+    const [, args] = mockedRecompute.mock.calls[0];
+    expect(args.hqId).toBe(HQ_ID);
+    expect(args.now).toBeInstanceOf(Date);
+  });
+
+  it("calls recomputeHqInsights after a successful examDate-only UPDATE", async () => {
+    stubSupabase({
+      user: { id: "user-1" },
+      studyHqQueue: [
+        { data: { id: HQ_ID }, error: null },
+        { data: null, error: null },
+      ],
+    });
+
+    const res = await POST(postRequest({ examProfileId: PROFILE_ID, examDate: "2026-08-01" }));
+
+    expect(res.status).toBe(200);
+    expect(mockedRecompute).toHaveBeenCalledTimes(1);
+  });
+
+  it("swallows a recompute failure: the UPDATE response is still 200 (best-effort, per D7)", async () => {
+    mockedRecompute.mockRejectedValue(new Error("recompute boom"));
+    stubSupabase({
+      user: { id: "user-1" },
+      studyHqQueue: [
+        { data: { id: HQ_ID }, error: null },
+        { data: null, error: null },
+      ],
+    });
+
+    const res = await POST(postRequest({ examProfileId: PROFILE_ID, examDate: "2026-08-01" }));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: HQ_ID, existed: true });
+    expect(mockedRecompute).toHaveBeenCalledTimes(1);
   });
 });
