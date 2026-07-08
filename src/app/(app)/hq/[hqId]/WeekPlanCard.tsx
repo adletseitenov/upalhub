@@ -61,7 +61,7 @@ export async function WeekPlanCard({ examDateIsSet, currentWeek }: WeekPlanCardP
         </ul>
       )}
       <p className="text-sm text-gray-500">
-        {t("suggestedTest")}: {capitalize(currentWeek.topics.suggestedTest.kind)}
+        {t("suggestedTest")}: {t(`kind${capitalize(currentWeek.topics.suggestedTest.kind)}`)}
       </p>
     </section>
   );
