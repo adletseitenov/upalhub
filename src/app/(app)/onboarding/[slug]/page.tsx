@@ -74,6 +74,12 @@ export default async function OnboardingPage({
       variants={spec.variants}
       selectionGroups={spec.selectionGroups}
       steps={steps}
+      scoring={{
+        scaleMin: spec.scoring.scaleMin,
+        scaleMax: spec.scoring.scaleMax,
+        step: spec.scoring.step ?? null,
+        unit: spec.scoring.unit,
+      }}
     />
   );
 }

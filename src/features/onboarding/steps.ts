@@ -10,6 +10,7 @@ import type { ExamProfileSpec, SelectionGroup } from "@/features/exam-profile/sp
 
 export type OnboardingStep =
   | { kind: "confirm" }
+  | { kind: "goal" }
   | { kind: "variant" }
   | { kind: "selection" }
   | { kind: "date" };
@@ -20,8 +21,11 @@ export type OnboardingStep =
 // урезанный набор пропсов, дошедший до клиента — см. OnboardingWizard).
 export type StepsSpec = Pick<ExamProfileSpec, "variants" | "selectionGroups">;
 
+// D6 (Task 8) 🔴: goal — мотивирующий якорь сразу ПОСЛЕ confirm, а не
+// терминальный шаг перед датой — порядок: confirm → goal → variant? →
+// selection? → date.
 export function buildOnboardingSteps(spec: StepsSpec): OnboardingStep[] {
-  const steps: OnboardingStep[] = [{ kind: "confirm" }];
+  const steps: OnboardingStep[] = [{ kind: "confirm" }, { kind: "goal" }];
   if (spec.variants.length > 0) steps.push({ kind: "variant" });
   if (spec.selectionGroups.length > 0) steps.push({ kind: "selection" });
   steps.push({ kind: "date" });
@@ -72,10 +76,16 @@ export function defaultConfig(spec: StepsSpec, variantKey: string | null): Draft
 // D-important5: shape of a persisted OnboardingWizard localStorage draft —
 // deliberately loose (subset of the wizard's own Draft type) so this module
 // stays free of any client/DOM import.
+// D6 (Task 8): target — optional, aligned with the wizard's own Draft.target
+// (raw text the user typed on the goal step; absent/undefined when older
+// drafts predate this field — additive, not a breaking change).
 export type DraftLike = {
   variantKey: string | null;
   selected: string[];
+  target?: string | null;
 };
+
+export type TargetRange = { min: number; max: number };
 
 /**
  * reconcileDraft (D-important5): a localStorage draft saved from a PRIOR
@@ -87,15 +97,31 @@ export type DraftLike = {
  * to remove them (they render in no current pool) -> validateHqConfig 422s
  * forever on finish. Drop what the current spec no longer knows about BEFORE
  * seeding wizard state from the draft.
+ *
+ * D6 (Task 8) 🔴 additive extension: an optional 4th `targetRange` param
+ * reconciles `draft.target` the same way — a target saved under a PRIOR
+ * profile's scoring scale (or corrupted/garbage text) can fall outside the
+ * CURRENT spec's [scaleMin, scaleMax], or fail to parse as a finite number.
+ * Such a target is dropped (-> null) rather than silently kept and later
+ * rejected by the /api/study-hqs bodySchema regex, or displayed as a
+ * confusing out-of-range prefill. Omitting the 4th arg (existing call
+ * sites/tests) leaves `target` untouched — purely additive.
  */
 export function reconcileDraft<D extends DraftLike>(
   draft: D,
   validSectionNames: ReadonlySet<string>,
   validVariantKeys: ReadonlySet<string>,
+  targetRange?: TargetRange,
 ): D {
-  return {
+  const reconciled: D = {
     ...draft,
     variantKey: draft.variantKey != null && validVariantKeys.has(draft.variantKey) ? draft.variantKey : null,
     selected: draft.selected.filter((name) => validSectionNames.has(name)),
   };
+  if (targetRange && draft.target != null) {
+    const n = Number(draft.target);
+    const inRange = Number.isFinite(n) && n >= targetRange.min && n <= targetRange.max;
+    reconciled.target = inRange ? draft.target : null;
+  }
+  return reconciled;
 }

@@ -68,34 +68,49 @@ const degradedSpec: ExamProfileSpec = examProfileSpecSchema.parse({
   selectionGroups: [{ key: "g", title: "G", chooseCount: 2, sectionNames: ["B", "C"] }],
 });
 
-describe("buildOnboardingSteps (D1)", () => {
-  it("IELTS-подобная плоская спека -> confirm + date", () => {
-    expect(buildOnboardingSteps(ieltsLikeSpec)).toEqual([{ kind: "confirm" }, { kind: "date" }]);
+describe("buildOnboardingSteps (D1/D6)", () => {
+  it("IELTS-подобная плоская спека -> confirm + goal + date", () => {
+    expect(buildOnboardingSteps(ieltsLikeSpec)).toEqual([
+      { kind: "confirm" },
+      { kind: "goal" },
+      { kind: "date" },
+    ]);
   });
 
-  it("вариантная спека -> confirm + variant + date", () => {
+  it("вариантная спека -> confirm + goal + variant + date", () => {
     expect(buildOnboardingSteps(variantSpec)).toEqual([
       { kind: "confirm" },
+      { kind: "goal" },
       { kind: "variant" },
       { kind: "date" },
     ]);
   });
 
-  it("выбираемая спека (без variants) -> confirm + selection + date", () => {
+  it("выбираемая спека (без variants) -> confirm + goal + selection + date", () => {
     expect(buildOnboardingSteps(selectableSpec)).toEqual([
       { kind: "confirm" },
+      { kind: "goal" },
       { kind: "selection" },
       { kind: "date" },
     ]);
   });
 
-  it("спека с variants И selectionGroups -> все четыре шага по порядку", () => {
+  it("спека с variants И selectionGroups -> confirm + goal + variant + selection + date", () => {
     expect(buildOnboardingSteps(degradedSpec)).toEqual([
       { kind: "confirm" },
+      { kind: "goal" },
       { kind: "variant" },
       { kind: "selection" },
       { kind: "date" },
     ]);
+  });
+
+  it("D6 🔴: goal идёт СРАЗУ после confirm, независимо от того, что дальше", () => {
+    for (const spec of [ieltsLikeSpec, variantSpec, selectableSpec, degradedSpec]) {
+      const steps = buildOnboardingSteps(spec);
+      expect(steps[0]).toEqual({ kind: "confirm" });
+      expect(steps[1]).toEqual({ kind: "goal" });
+    }
   });
 });
 
@@ -179,5 +194,53 @@ describe("reconcileDraft (D-important5)", () => {
   it("leaves a null variantKey as null (not a throw / not coerced)", () => {
     const draft = { variantKey: null, selected: [] };
     expect(reconcileDraft(draft, validSectionNames, validVariantKeys).variantKey).toBeNull();
+  });
+
+  // D6 (Task 8) 🔴: target reconciliation is additive — only kicks in when a
+  // 4th targetRange arg is passed. Existing 3-arg call sites above are
+  // untouched by this.
+  describe("target reconciliation (4th arg, additive)", () => {
+    const targetRange = { min: 0, max: 9 };
+
+    it("omitting targetRange leaves draft.target untouched (backwards-compatible 3-arg call)", () => {
+      const draft = { variantKey: null, selected: [], target: "999" };
+      expect(reconcileDraft(draft, validSectionNames, validVariantKeys)).toEqual({
+        variantKey: null,
+        selected: [],
+        target: "999",
+      });
+    });
+
+    it("keeps a target within [min, max]", () => {
+      const draft = { variantKey: null, selected: [], target: "7.5" };
+      expect(reconcileDraft(draft, validSectionNames, validVariantKeys, targetRange).target).toBe("7.5");
+    });
+
+    it("keeps a target exactly at the boundary (closed interval)", () => {
+      const atMin = { variantKey: null, selected: [], target: "0" };
+      const atMax = { variantKey: null, selected: [], target: "9" };
+      expect(reconcileDraft(atMin, validSectionNames, validVariantKeys, targetRange).target).toBe("0");
+      expect(reconcileDraft(atMax, validSectionNames, validVariantKeys, targetRange).target).toBe("9");
+    });
+
+    it("drops a target above max", () => {
+      const draft = { variantKey: null, selected: [], target: "15" };
+      expect(reconcileDraft(draft, validSectionNames, validVariantKeys, targetRange).target).toBeNull();
+    });
+
+    it("drops a target below min", () => {
+      const draft = { variantKey: null, selected: [], target: "-3" };
+      expect(reconcileDraft(draft, validSectionNames, validVariantKeys, targetRange).target).toBeNull();
+    });
+
+    it("drops a non-numeric (NaN) target", () => {
+      const draft = { variantKey: null, selected: [], target: "abc" };
+      expect(reconcileDraft(draft, validSectionNames, validVariantKeys, targetRange).target).toBeNull();
+    });
+
+    it("leaves a null target as null (nothing to reconcile)", () => {
+      const draft = { variantKey: null, selected: [], target: null };
+      expect(reconcileDraft(draft, validSectionNames, validVariantKeys, targetRange).target).toBeNull();
+    });
   });
 });

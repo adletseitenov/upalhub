@@ -18,10 +18,18 @@ export const maxDuration = 60;
 // остаётся валидным (config/examDate — optional, отсутствие обеих не меняет
 // поведение относительно версии до Task5).
 const dateStringSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD");
+// D6 (Task 8): target — free-text goal score typed on the onboarding wizard's
+// goal step, stored as-is (study_hqs.target is text, not validated against
+// the exam profile's scoring scale — a stale target from a profile swap
+// still parses as a number; range-checking happens read-time in
+// parseTargetNumber/computeGoalGap, D2/T6). Only the *shape* (finite decimal
+// string) is enforced here — garbage ("abc", "") -> 400.
+const targetStringSchema = z.string().regex(/^-?\d+(\.\d+)?$/, "expected a numeric string");
 const bodySchema = z.object({
   examProfileId: z.uuid(),
   config: z.unknown().optional(),
   examDate: dateStringSchema.nullable().optional(),
+  target: targetStringSchema.optional(),
 });
 
 // D1 🔴: config, если передан, проверяется на форму (Array.isArray-гард, как
@@ -67,6 +75,14 @@ export async function POST(request: Request) {
     ? (parsed.data.examDate ?? null)
     : undefined;
 
+  // D6 (Task 8) 🔴 partial-patch, exact same pattern as examDate above:
+  // target trotters ONLY if the key is present in the body — the goal step
+  // being skipped (no key at all) must not clear an already-saved target.
+  // Unlike examDate, target has no "clear" story here (bodySchema rejects
+  // null/garbage) — the goal step's own "Пропустить" simply omits the key.
+  const hasTargetField = "target" in rawObject;
+  const target: string | undefined = hasTargetField ? parsed.data.target : undefined;
+
   // Если пришёл config — валидируем его против спеки профиля ДО записи
   // (422 invalid_config, а не тихое сохранение несовместимого выбора).
   if (config !== undefined) {
@@ -97,6 +113,7 @@ export async function POST(request: Request) {
     const updatePayload: Database["public"]["Tables"]["study_hqs"]["Update"] = {};
     if (config !== undefined) updatePayload.config = config as unknown as Json;
     if (hasExamDateField) updatePayload.exam_date = examDate;
+    if (hasTargetField && target !== undefined) updatePayload.target = target;
 
     if (Object.keys(updatePayload).length > 0) {
       const { error: updateError } = await supabase
@@ -131,6 +148,7 @@ export async function POST(request: Request) {
   };
   if (config !== undefined) insertPayload.config = config as unknown as Json;
   if (hasExamDateField) insertPayload.exam_date = examDate;
+  if (hasTargetField && target !== undefined) insertPayload.target = target;
 
   const { data: created, error } = await supabase
     .from("study_hqs")

@@ -13,6 +13,16 @@ import {
 
 export type OnboardingSectionSummary = { name: string; taskCount: number | null };
 
+// D6 (Task 8): urезанный scoring, дошедший из spec.scoring — только то, что
+// нужно шагу goal (min/max/step для number input + unit для подсказки).
+// step может отсутствовать в старых профилях (spec.scoring.step nullish).
+export type OnboardingScoring = {
+  scaleMin: number;
+  scaleMax: number;
+  step: number | null;
+  unit: string;
+};
+
 export type OnboardingWizardProps = {
   slug: string;
   profileId: string;
@@ -23,12 +33,15 @@ export type OnboardingWizardProps = {
   variants: ExamVariant[];
   selectionGroups: SelectionGroup[];
   steps: OnboardingStep[];
+  scoring: OnboardingScoring;
 };
 
 type Draft = {
   variantKey: string | null;
   selected: string[];
   examDate: string | null | "skipped";
+  // D6 (Task 8): raw text typed on the goal step; null = not entered (skip).
+  target: string | null;
 };
 
 // D1 🔴 localStorage-черновик: ключ onboarding:<slug>, восстановление
@@ -54,7 +67,8 @@ function loadDraft(slug: string): Draft | null {
       parsed.examDate === "skipped" || parsed.examDate === null || typeof parsed.examDate === "string"
         ? parsed.examDate
         : null;
-    return { variantKey, selected, examDate };
+    const target = typeof parsed.target === "string" ? parsed.target : null;
+    return { variantKey, selected, examDate, target };
   } catch {
     return null;
   }
@@ -121,13 +135,15 @@ async function finishOnce(
   examProfileId: string,
   config: { variantKey: string | null; selectedSectionNames: string[] },
   examDate: string | undefined,
+  target: string | undefined,
 ): Promise<FinishOutcome> {
   try {
-    // 🔴 examDate ТОЛЬКО если юзер реально ввёл дату — отсутствие ключа в
-    // теле (а не null) сигналит роуту "не трогай exam_date" (частичный
-    // patch, см. api/study-hqs/route.ts).
+    // 🔴 examDate/target ТОЛЬКО если юзер реально ввёл значение — отсутствие
+    // ключа в теле (а не null) сигналит роуту "не трогай эту колонку"
+    // (частичный patch, см. api/study-hqs/route.ts).
     const body: Record<string, unknown> = { examProfileId, config };
     if (examDate !== undefined) body.examDate = examDate;
+    if (target !== undefined) body.target = target;
     const res = await fetch("/api/study-hqs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -164,7 +180,14 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
     if (!raw) return null;
     const validSectionNames = new Set(props.sections.map((s) => s.name));
     const validVariantKeys = new Set(props.variants.map((v) => v.key));
-    return reconcileDraft(raw, validSectionNames, validVariantKeys);
+    // D6 (Task 8) 🔴: a draft's target can predate a profile reroll/refine
+    // whose scoring scale differs — reconcile against the CURRENT scale, or
+    // an out-of-range prefill would silently disable "Далее" on the goal
+    // step with no obvious reason.
+    return reconcileDraft(raw, validSectionNames, validVariantKeys, {
+      min: props.scoring.scaleMin,
+      max: props.scoring.scaleMax,
+    });
   }
 
   const [stepIndex, setStepIndex] = useState(0);
@@ -177,6 +200,7 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
   const [examDate, setExamDate] = useState<string | null | "skipped">(
     () => loadReconciledDraft()?.examDate ?? null,
   );
+  const [target, setTarget] = useState<string | null>(() => loadReconciledDraft()?.target ?? null);
   const [busy, setBusy] = useState(false);
   const [researching, setResearching] = useState(false);
   const [rerollOpen, setRerollOpen] = useState(false);
@@ -190,6 +214,15 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
     return count === p.group.chooseCount;
   });
 
+  // D6 (Task 8): пустое поле — можно идти дальше/пропустить без target;
+  // непустое, но вне [scaleMin, scaleMax] (или нечисловое) — блокирует
+  // "Далее" клиент-валидацией (сервер продублирует regex-гейтом на 400).
+  const targetOutOfRange = (() => {
+    if (target === null || target.trim() === "") return false;
+    const n = Number(target);
+    return !Number.isFinite(n) || n < props.scoring.scaleMin || n > props.scoring.scaleMax;
+  })();
+
   function goNext() {
     setError(null);
     setStepIndex((i) => Math.min(i + 1, props.steps.length - 1));
@@ -201,7 +234,7 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
 
   function selectVariant(key: string) {
     setVariantKey(key);
-    saveDraft(props.slug, { variantKey: key, selected: Array.from(selected), examDate });
+    saveDraft(props.slug, { variantKey: key, selected: Array.from(selected), examDate, target });
   }
 
   function toggleSection(name: string, poolEntry: SelectionPoolEntry) {
@@ -215,13 +248,25 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
       next.add(name);
     }
     setSelected(next);
-    saveDraft(props.slug, { variantKey, selected: Array.from(next), examDate });
+    saveDraft(props.slug, { variantKey, selected: Array.from(next), examDate, target });
   }
 
   function onExamDateChange(value: string) {
     const next = value === "" ? null : value;
     setExamDate(next);
-    saveDraft(props.slug, { variantKey, selected: Array.from(selected), examDate: next });
+    saveDraft(props.slug, { variantKey, selected: Array.from(selected), examDate: next, target });
+  }
+
+  function onTargetChange(value: string) {
+    const next = value === "" ? null : value;
+    setTarget(next);
+    saveDraft(props.slug, { variantKey, selected: Array.from(selected), examDate, target: next });
+  }
+
+  function skipGoal() {
+    setTarget(null);
+    saveDraft(props.slug, { variantKey, selected: Array.from(selected), examDate, target: null });
+    goNext();
   }
 
   async function submitReroll() {
@@ -256,7 +301,11 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
     const config = { variantKey, selectedSectionNames: effectiveSelectedNames(pools, selected) };
     const examDateValue =
       examDateOverride !== null && examDateOverride !== "skipped" ? examDateOverride : undefined;
-    const outcome = await finishOnce(props.profileId, config, examDateValue);
+    // 🔴 D6: body.target ТОЛЬКО если юзер реально ввёл значение на шаге goal
+    // — target=null (пропущен) не должен попасть в body ключом вовсе
+    // (partial-patch, см. finishOnce/route.ts).
+    const targetValue = target !== null && target.trim() !== "" ? target : undefined;
+    const outcome = await finishOnce(props.profileId, config, examDateValue, targetValue);
     if (outcome.kind === "success") {
       clearDraft(props.slug);
       router.replace("/hq"); // 🔴 replace, не push
@@ -343,6 +392,45 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
             </div>
           )}
           {error && <p className="text-sm text-red-600">{error}</p>}
+        </div>
+      )}
+
+      {step.kind === "goal" && (
+        <div className="flex flex-col gap-4">
+          <h2 className="font-semibold">{t("goalTitle")}</h2>
+          <input
+            type="number"
+            inputMode="decimal"
+            className="rounded border p-3"
+            min={props.scoring.scaleMin}
+            max={props.scoring.scaleMax}
+            step={props.scoring.step ?? 1}
+            value={target ?? ""}
+            onChange={(e) => onTargetChange(e.target.value)}
+          />
+          <p className="text-sm text-gray-500">
+            {t("goalHint", {
+              min: props.scoring.scaleMin,
+              max: props.scoring.scaleMax,
+              unit: props.scoring.unit,
+            })}
+          </p>
+          <div className="flex gap-3">
+            <button type="button" onClick={goBack} className="rounded border px-4 py-2 text-sm">
+              ←
+            </button>
+            <button
+              type="button"
+              onClick={goNext}
+              disabled={targetOutOfRange}
+              className="rounded border px-6 py-3 font-medium"
+            >
+              →
+            </button>
+            <button type="button" onClick={skipGoal} className="rounded border px-4 py-2 text-sm">
+              {t("goalSkip")}
+            </button>
+          </div>
         </div>
       )}
 
@@ -451,7 +539,12 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
               type="button"
               onClick={() => {
                 setExamDate("skipped");
-                saveDraft(props.slug, { variantKey, selected: Array.from(selected), examDate: "skipped" });
+                saveDraft(props.slug, {
+                  variantKey,
+                  selected: Array.from(selected),
+                  examDate: "skipped",
+                  target,
+                });
                 void handleFinish("skipped");
               }}
               disabled={busy}

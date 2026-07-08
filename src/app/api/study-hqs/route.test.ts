@@ -318,6 +318,80 @@ describe("POST /api/study-hqs", () => {
     expect(payload).toHaveProperty("config");
   });
 
+  // D6 (Task 8): target — same partial-patch discipline as examDate above.
+  it("400s when target is garbage (non-numeric string)", async () => {
+    stubSupabase({ user: { id: "user-1" } });
+
+    const res = await POST(postRequest({ examProfileId: PROFILE_ID, target: "not-a-number" }));
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "bad_request" });
+  });
+
+  it("400s when target is an empty string", async () => {
+    stubSupabase({ user: { id: "user-1" } });
+
+    const res = await POST(postRequest({ examProfileId: PROFILE_ID, target: "" }));
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "bad_request" });
+  });
+
+  it("existing hq + target absent -> update payload has no target key at all", async () => {
+    const captured = { updates: [] as unknown[], inserts: [] as unknown[] };
+    stubSupabase({
+      user: { id: "user-1" },
+      studyHqQueue: [
+        { data: { id: HQ_ID }, error: null }, // find-existing
+        { data: null, error: null }, // update
+      ],
+      captured,
+    });
+
+    const res = await POST(postRequest({ examProfileId: PROFILE_ID, examDate: "2026-08-01" }));
+
+    expect(res.status).toBe(200);
+    expect(captured.updates).toHaveLength(1);
+    const payload = captured.updates[0] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("target");
+  });
+
+  it("existing hq + target present -> update payload writes the target string", async () => {
+    const captured = { updates: [] as unknown[], inserts: [] as unknown[] };
+    stubSupabase({
+      user: { id: "user-1" },
+      studyHqQueue: [
+        { data: { id: HQ_ID }, error: null },
+        { data: null, error: null },
+      ],
+      captured,
+    });
+
+    const res = await POST(postRequest({ examProfileId: PROFILE_ID, target: "7.5" }));
+
+    expect(res.status).toBe(200);
+    expect(captured.updates).toHaveLength(1);
+    expect(captured.updates[0]).toEqual({ target: "7.5" });
+  });
+
+  it("no hq + target present -> insert payload includes the target string", async () => {
+    const captured = { updates: [] as unknown[], inserts: [] as unknown[] };
+    stubSupabase({
+      user: { id: "user-1" },
+      studyHqQueue: [
+        { data: null, error: null }, // find-existing: none
+        { data: { id: "new-hq" }, error: null }, // insert result
+      ],
+      captured,
+    });
+
+    const res = await POST(postRequest({ examProfileId: PROFILE_ID, target: "120" }));
+
+    expect(res.status).toBe(200);
+    expect(captured.inserts).toHaveLength(1);
+    expect(captured.inserts[0]).toMatchObject({ target: "120" });
+  });
+
   it("races a 23505 insert conflict to the winning row, still existed:true", async () => {
     const captured = { updates: [] as unknown[], inserts: [] as unknown[] };
     stubSupabase({
@@ -362,6 +436,21 @@ describe("POST /api/study-hqs: recompute on UPDATE (D7)", () => {
     const [, args] = mockedRecompute.mock.calls[0];
     expect(args.hqId).toBe(HQ_ID);
     expect(args.now).toBeInstanceOf(Date);
+  });
+
+  it("calls recomputeHqInsights after a successful target-only UPDATE (D6/T8)", async () => {
+    stubSupabase({
+      user: { id: "user-1" },
+      studyHqQueue: [
+        { data: { id: HQ_ID }, error: null },
+        { data: null, error: null },
+      ],
+    });
+
+    const res = await POST(postRequest({ examProfileId: PROFILE_ID, target: "7.5" }));
+
+    expect(res.status).toBe(200);
+    expect(mockedRecompute).toHaveBeenCalledTimes(1);
   });
 
   it("calls recomputeHqInsights after a successful examDate-only UPDATE", async () => {
