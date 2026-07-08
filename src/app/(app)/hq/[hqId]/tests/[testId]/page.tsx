@@ -239,7 +239,7 @@ export default async function TestPage({
         attempt={attempt}
         language={spec.language}
       />
-      {attempt?.finished && <ReviewList items={reviewItems} />}
+      {attempt && attempt.finished && <ReviewList items={reviewItems} attemptId={attempt.id} />}
     </>
   );
 }

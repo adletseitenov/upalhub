@@ -13,7 +13,10 @@ import type { TaskBody, TaskResponse } from "@/features/tasks/schema";
 import { AudioPassage } from "@/features/attempts/AudioPassage";
 import type { ReviewViewItem } from "@/features/review/view";
 
-export type ReviewListProps = { items: ReviewViewItem[] };
+export type ReviewListProps = { items: ReviewViewItem[]; attemptId: string };
+
+type ExplainResult = { explanation: string; hint?: string };
+type ExplainError = "rate_limited" | "error";
 
 function formatUserResponse(body: TaskBody, response: TaskResponse | null): string | null {
   if (!response) return null;
@@ -31,9 +34,51 @@ function formatUserResponse(body: TaskBody, response: TaskResponse | null): stri
   return null;
 }
 
-export function ReviewList({ items }: ReviewListProps) {
+export function ReviewList({ items, attemptId }: ReviewListProps) {
   const t = useTranslations("review");
   const [showAll, setShowAll] = useState(false);
+
+  // D5/Task9: AI-explain — busy per-item (Set, не единый флаг: несколько
+  // карточек могут стучаться в кнопку независимо), результат/ошибка per-item
+  // (Map taskId -> ...) — переживает toggle showAll (state живёт на
+  // ReviewList, не на размонтируемых карточках).
+  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
+  const [explainResults, setExplainResults] = useState<Map<string, ExplainResult>>(new Map());
+  const [explainErrors, setExplainErrors] = useState<Map<string, ExplainError>>(new Map());
+
+  async function requestExplain(taskId: string) {
+    if (busyIds.has(taskId)) return; // busy-lock: повторный клик по этой карточке игнорируется
+    setBusyIds((prev) => new Set(prev).add(taskId));
+    setExplainErrors((prev) => {
+      if (!prev.has(taskId)) return prev;
+      const next = new Map(prev);
+      next.delete(taskId);
+      return next;
+    });
+    try {
+      const res = await fetch(`/api/attempts/${attemptId}/items/${taskId}/explain`, { method: "POST" });
+      if (res.status === 429) {
+        setExplainErrors((prev) => new Map(prev).set(taskId, "rate_limited"));
+        return;
+      }
+      if (!res.ok) {
+        // 502 (llm_unavailable) и любой прочий провал — мягкая деградация,
+        // level-0 разбор (уже отрендерен) остаётся рабочим без этой кнопки.
+        setExplainErrors((prev) => new Map(prev).set(taskId, "error"));
+        return;
+      }
+      const data = (await res.json()) as ExplainResult;
+      setExplainResults((prev) => new Map(prev).set(taskId, data));
+    } catch {
+      setExplainErrors((prev) => new Map(prev).set(taskId, "error"));
+    } finally {
+      setBusyIds((prev) => {
+        const next = new Set(prev);
+        next.delete(taskId);
+        return next;
+      });
+    }
+  }
 
   if (items.length === 0) return null;
 
@@ -66,7 +111,13 @@ export function ReviewList({ items }: ReviewListProps) {
               {item.kind === "unavailable" ? (
                 <p className="text-sm text-gray-500">{t("taskUnavailable")}</p>
               ) : (
-                <ReviewItemCard item={item} />
+                <ReviewItemCard
+                  item={item}
+                  busy={busyIds.has(item.taskId)}
+                  result={explainResults.get(item.taskId)}
+                  error={explainErrors.get(item.taskId)}
+                  onExplain={() => requestExplain(item.taskId)}
+                />
               )}
             </li>
           ))}
@@ -76,7 +127,19 @@ export function ReviewList({ items }: ReviewListProps) {
   );
 }
 
-function ReviewItemCard({ item }: { item: Extract<ReviewViewItem, { kind: "available" }> }) {
+function ReviewItemCard({
+  item,
+  busy,
+  result,
+  error,
+  onExplain,
+}: {
+  item: Extract<ReviewViewItem, { kind: "available" }>;
+  busy: boolean;
+  result: ExplainResult | undefined;
+  error: ExplainError | undefined;
+  onExplain: () => void;
+}) {
   const t = useTranslations("review");
   const userAnswerText = formatUserResponse(item.body, item.userResponse);
 
@@ -110,6 +173,35 @@ function ReviewItemCard({ item }: { item: Extract<ReviewViewItem, { kind: "avail
               {item.answerView.explanation}
             </p>
           )}
+
+          {/* D5/Task9: AI-explain — единственный LLM-путь этапа 3. Только
+              full-answerView (locked-карточки кнопку вообще не рендерят —
+              см. gate выше "kind === locked"). */}
+          <div className="flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={onExplain}
+              disabled={busy}
+              className="self-start rounded border px-3 py-1 text-sm font-medium"
+            >
+              {busy ? t("explainBusy") : t("explainButton")}
+            </button>
+            {result && (
+              <div className="rounded bg-gray-50 p-3 text-sm text-gray-700">
+                <p>{result.explanation}</p>
+                {result.hint && (
+                  <p className="mt-1 text-gray-500">
+                    <span className="font-medium">{t("explainHint")}: </span>
+                    {result.hint}
+                  </p>
+                )}
+              </div>
+            )}
+            {error === "rate_limited" && (
+              <p className="text-sm text-red-600">{t("explainRateLimited")}</p>
+            )}
+            {error === "error" && <p className="text-sm text-red-600">{t("explainUnavailable")}</p>}
+          </div>
         </>
       )}
 
