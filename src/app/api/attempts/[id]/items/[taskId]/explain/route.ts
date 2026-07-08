@@ -99,9 +99,20 @@ export async function POST(
     }
   }
 
-  // 🔴 Лимитер строго ПОСЛЕ всех auth/ownership/finished/cross-attempt
-  // гейтов и СТРОГО ДО любого чтения answer/explanation или LLM-вызова — ни
-  // одного токена на невалидный запрос, ни одного LLM-спенда без токена.
+  // 🔴 Лёгкое чтение item (user-доступно via RLS) ДО лимитера — проверка
+  // correctness-гейта ПЕРЕД потреблением токена.
+  const items = await attemptRepo.getItems(attempt.id);
+  const itemRow = items.find((item) => item.taskId === taskId);
+
+  // Отказать если ответ правильный — explain только для ошибок
+  if (itemRow?.isCorrect !== false) {
+    return NextResponse.json({ error: "not_a_mistake" }, { status: 400 });
+  }
+
+  // 🔴 Лимитер строго ПОСЛЕ всех auth/ownership/finished/cross-attempt гейтов,
+  // после correctness-проверки (не жечь токен на верные ответы) и СТРОГО ДО
+  // любого чтения answer/explanation или LLM-вызова — ни одного токена на
+  // невалидный запрос, ни одного LLM-спенда без токена.
   if (!explainLimiter.take(data.user.id)) {
     return NextResponse.json({ error: "rate_limited" }, { status: 429 });
   }
@@ -113,9 +124,7 @@ export async function POST(
   const stored = taskRow ? rowToStoredTask(taskRow) : null;
   if (!stored) return NextResponse.json({ error: "not_found" }, { status: 404 });
 
-  const items = await attemptRepo.getItems(attempt.id);
-  const itemRow = items.find((item) => item.taskId === taskId);
-  const responseParsed = taskResponseSchema.safeParse(itemRow?.response ?? null);
+  const responseParsed = taskResponseSchema.safeParse(itemRow.response ?? null);
   const userResponse: TaskResponse | null = responseParsed.success ? responseParsed.data : null;
 
   const locale = await resolveLocale();

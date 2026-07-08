@@ -272,6 +272,34 @@ describe("POST /api/attempts/[id]/items/[taskId]/explain", () => {
     expect(mockedCreateLlm).not.toHaveBeenCalled();
   });
 
+  it("🔴 400s with {error: not_a_mistake} when the item.isCorrect is true, without calling the LLM or consuming a limiter token", async () => {
+    const userId = "u-correct-answer";
+    stubAuth({ id: userId });
+    stubRepos({
+      attempt: attemptFixture({ userId }),
+      test: testFixture(),
+      items: [{ taskId: TASK_ID, response: { format: "single_choice", optionId: "a" }, timeMs: null, isCorrect: true }],
+    });
+    stubAdmin(taskRow());
+    const complete = stubLlmResolves({ explanation: "ok" });
+
+    const res = await callPost();
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "not_a_mistake" });
+    expect(complete).not.toHaveBeenCalled();
+
+    // Verify limiter token was not consumed: next valid (incorrect) request should succeed
+    stubRepos({
+      attempt: attemptFixture({ userId }),
+      test: testFixture(),
+      items: [{ taskId: TASK_ID, response: { format: "single_choice", optionId: "b" }, timeMs: null, isCorrect: false }],
+    });
+    const res2 = await callPost();
+    expect(res2.status).toBe(200);
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
   it("200s with {explanation, hint} on the happy path", async () => {
     stubAuth({ id: "user-1" });
     stubRepos({
@@ -291,7 +319,11 @@ describe("POST /api/attempts/[id]/items/[taskId]/explain", () => {
 
   it("502s with {error: llm_unavailable} (not a raw 500) when the LLM throws (incl. 402)", async () => {
     stubAuth({ id: "user-1" });
-    stubRepos({ attempt: attemptFixture(), test: testFixture() });
+    stubRepos({
+      attempt: attemptFixture(),
+      test: testFixture(),
+      items: [{ taskId: TASK_ID, response: { format: "single_choice", optionId: "b" }, timeMs: null, isCorrect: false }],
+    });
     stubAdmin(taskRow());
     stubLlmRejects(new Error("OpenRouter 402: insufficient credits"));
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -305,7 +337,11 @@ describe("POST /api/attempts/[id]/items/[taskId]/explain", () => {
 
   it("429s once the caller's token bucket (capacity 10) is exhausted, before the LLM is ever called", async () => {
     stubAuth({ id: "u-explain-limited" });
-    stubRepos({ attempt: attemptFixture({ userId: "u-explain-limited" }), test: testFixture() });
+    stubRepos({
+      attempt: attemptFixture({ userId: "u-explain-limited" }),
+      test: testFixture(),
+      items: [{ taskId: TASK_ID, response: { format: "single_choice", optionId: "b" }, timeMs: null, isCorrect: false }],
+    });
     stubAdmin(taskRow());
     const complete = stubLlmResolves({ explanation: "ok" });
 

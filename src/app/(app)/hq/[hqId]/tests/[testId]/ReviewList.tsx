@@ -176,32 +176,34 @@ function ReviewItemCard({
 
           {/* D5/Task9: AI-explain — единственный LLM-путь этапа 3. Только
               full-answerView (locked-карточки кнопку вообще не рендерят —
-              см. gate выше "kind === locked"). */}
-          <div className="flex flex-col gap-2">
-            <button
-              type="button"
-              onClick={onExplain}
-              disabled={busy}
-              className="self-start rounded border px-3 py-1 text-sm font-medium"
-            >
-              {busy ? t("explainBusy") : t("explainButton")}
-            </button>
-            {result && (
-              <div className="rounded bg-gray-50 p-3 text-sm text-gray-700">
-                <p>{result.explanation}</p>
-                {result.hint && (
-                  <p className="mt-1 text-gray-500">
-                    <span className="font-medium">{t("explainHint")}: </span>
-                    {result.hint}
-                  </p>
-                )}
-              </div>
-            )}
-            {error === "rate_limited" && (
-              <p className="text-sm text-red-600">{t("explainRateLimited")}</p>
-            )}
-            {error === "error" && <p className="text-sm text-red-600">{t("explainUnavailable")}</p>}
-          </div>
+              см. gate выше "kind === locked"). Только для неправильных ответов. */}
+          {!item.correct && (
+            <div className="flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={onExplain}
+                disabled={busy}
+                className="self-start rounded border px-3 py-1 text-sm font-medium"
+              >
+                {busy ? t("explainBusy") : t("explainButton")}
+              </button>
+              {result && (
+                <div className="rounded bg-gray-50 p-3 text-sm text-gray-700">
+                  <p>{result.explanation}</p>
+                  {result.hint && (
+                    <p className="mt-1 text-gray-500">
+                      <span className="font-medium">{t("explainHint")}: </span>
+                      {result.hint}
+                    </p>
+                  )}
+                </div>
+              )}
+              {error === "rate_limited" && (
+                <p className="text-sm text-red-600">{t("explainRateLimited")}</p>
+              )}
+              {error === "error" && <p className="text-sm text-red-600">{t("explainUnavailable")}</p>}
+            </div>
+          )}
         </>
       )}
 
