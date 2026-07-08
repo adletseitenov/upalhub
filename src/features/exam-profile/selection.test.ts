@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { examProfileSpecSchema, type ExamProfileSpec } from "./spec";
-import { hqConfigSchema, resolveActiveSections, validateHqConfig } from "./selection";
+import { hqConfigSchema, parseHqConfig, resolveActiveSections, validateHqConfig } from "./selection";
 
 const baseFields = {
   language: "ru",
@@ -108,6 +108,37 @@ describe("hqConfigSchema", () => {
   it("defaults selectedSectionNames to [] and allows a nullish variantKey", () => {
     expect(hqConfigSchema.parse({})).toEqual({ selectedSectionNames: [] });
     expect(hqConfigSchema.parse({ variantKey: null })).toMatchObject({ variantKey: null });
+  });
+});
+
+// Stage3 T1: parseHqConfig консолидирован из дублей в /api/tests/route.ts и
+// (app)/onboarding/[slug]/page.tsx — единая точка истины для чтения
+// study_hqs.config (jsonb, приходит как unknown до типизации/после cast).
+describe("parseHqConfig (Stage3 T1 consolidation)", () => {
+  it("returns null for null/undefined raw config (legacy hq without onboarding)", () => {
+    expect(parseHqConfig(null)).toBeNull();
+    expect(parseHqConfig(undefined)).toBeNull();
+  });
+
+  it("returns null for an array (unexpected jsonb shape)", () => {
+    expect(parseHqConfig(["not", "an", "object"])).toBeNull();
+  });
+
+  it("returns null for garbage that does not match hqConfigSchema", () => {
+    expect(parseHqConfig("just a string")).toBeNull();
+    expect(parseHqConfig(42)).toBeNull();
+    expect(parseHqConfig({ variantKey: 123 })).toBeNull(); // wrong type
+    expect(parseHqConfig({ selectedSectionNames: "not-an-array" })).toBeNull();
+  });
+
+  it("parses a valid, empty config object", () => {
+    expect(parseHqConfig({})).toEqual({ selectedSectionNames: [] });
+  });
+
+  it("parses a fully populated valid config", () => {
+    expect(
+      parseHqConfig({ variantKey: "phys-math", selectedSectionNames: ["Английский"] }),
+    ).toEqual({ variantKey: "phys-math", selectedSectionNames: ["Английский"] });
   });
 });
 

@@ -246,27 +246,33 @@ export type Database = {
       forecasts: {
         Row: {
           confidence: string
+          coverage: number | null // stage3: manual until regen
           created_at: string
           high: number
           hq_id: string
           id: string
           low: number
+          point: number | null // stage3: manual until regen
         }
         Insert: {
           confidence: string
+          coverage?: number | null // stage3: manual until regen
           created_at?: string
           high: number
           hq_id: string
           id?: string
           low: number
+          point?: number | null // stage3: manual until regen
         }
         Update: {
           confidence?: string
+          coverage?: number | null // stage3: manual until regen
           created_at?: string
           high?: number
           hq_id?: string
           id?: string
           low?: number
+          point?: number | null // stage3: manual until regen
         }
         Relationships: [
           {
@@ -368,19 +374,25 @@ export type Database = {
       }
       knowledge_states: {
         Row: {
+          answered_count: number // stage3: manual until regen
           hq_id: string
+          last_seen_at: string | null // stage3: manual until regen
           level: number
           topic: string
           updated_at: string
         }
         Insert: {
+          answered_count?: number // stage3: manual until regen
           hq_id: string
+          last_seen_at?: string | null // stage3: manual until regen
           level: number
           topic: string
           updated_at?: string
         }
         Update: {
+          answered_count?: number // stage3: manual until regen
           hq_id?: string
+          last_seen_at?: string | null // stage3: manual until regen
           level?: number
           topic?: string
           updated_at?: string
@@ -468,6 +480,7 @@ export type Database = {
           exam_date: string | null
           exam_profile_id: string
           id: string
+          last_recomputed_at: string | null // stage3: manual until regen
           status: string
           target: string | null
           user_id: string
@@ -478,6 +491,7 @@ export type Database = {
           exam_date?: string | null
           exam_profile_id: string
           id?: string
+          last_recomputed_at?: string | null // stage3: manual until regen
           status?: string
           target?: string | null
           user_id: string
@@ -488,6 +502,7 @@ export type Database = {
           exam_date?: string | null
           exam_profile_id?: string
           id?: string
+          last_recomputed_at?: string | null // stage3: manual until regen
           status?: string
           target?: string | null
           user_id?: string

@@ -9,13 +9,24 @@ type Row = Database["public"]["Tables"]["exam_profiles"]["Row"];
 const originSchema = z.enum(["ai_research", "uploaded", "manual"]);
 const trustSchema = z.enum(["ai_draft", "data_refined", "verified"]);
 
-function rowToProfile(row: Row): StoredExamProfile {
+// Stage3 T1 (хвост 2.5): битая/устаревшая spec (например, ручная правка в БД
+// или регресс в апстриме research) не должна ронять выборку 500-кой —
+// safeParse деградирует к null (как "профиль не найден"), а не throw.
+// Консьюмеры rowToProfile уже трактуют null как "нет строки" (findBySlug
+// исторически мог вернуть null при отсутствии записи), так что сигнатуры
+// вызовов не меняются.
+function rowToProfile(row: Row): StoredExamProfile | null {
+  const parsedSpec = examProfileSpecSchema.safeParse(row.spec);
+  if (!parsedSpec.success) {
+    console.warn(`exam_profiles row ${row.id} has an invalid spec, skipping:`, parsedSpec.error);
+    return null;
+  }
   return {
     id: row.id,
     slug: row.slug,
     title: row.title,
     language: row.language,
-    spec: examProfileSpecSchema.parse(row.spec),
+    spec: parsedSpec.data,
     sources: z.array(sourceRefSchema).parse(row.sources ?? []),
     origin: originSchema.parse(row.origin),
     trust: trustSchema.parse(row.trust),
@@ -36,6 +47,7 @@ export function supabaseExamProfileRepo(
       if (error) throw error;
       return data ? rowToProfile(data) : null;
     },
+
     async insert(p: NewExamProfile) {
       const { data, error } = await client
         .from("exam_profiles")
@@ -59,7 +71,15 @@ export function supabaseExamProfileRepo(
         }
         throw error;
       }
-      return rowToProfile(data);
+      const inserted = rowToProfile(data);
+      if (!inserted) {
+        // Практически недостижимо: p.spec уже прошла валидацию до insert,
+        // так что свежевставленная строка не должна проваливать safeParse.
+        // Явный throw вместо тихого null — insert() обязан вернуть профиль
+        // по контракту ExamProfileRepo.
+        throw new Error(`inserted exam_profiles row ${data.id} failed spec safeParse`);
+      }
+      return inserted;
     },
   };
   return repo;

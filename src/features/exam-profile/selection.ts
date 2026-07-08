@@ -20,6 +20,21 @@ export type HqConfig = z.infer<typeof hqConfigSchema>;
 
 type LooseHqConfig = { variantKey?: string | null; selectedSectionNames?: string[] };
 
+// Stage3 T1 (хвост 2.5): консолидация — этот хелпер был продублирован
+// (буквально идентичный код) в /api/tests/route.ts и в
+// (app)/onboarding/[slug]/page.tsx (и в /api/tests/[testId]/refill/route.ts,
+// вне зоны этой задачи). Единственная точка истины: study_hqs.config —
+// jsonb, до миграции T5 (Stage 2.5) колонки не было в database.types.ts,
+// поэтому вызывающая сторона читает её через cast (raw: unknown).
+// Тотальная (не throw): null/undefined/массив/непарсибельный объект -> null,
+// которое resolveActiveSections/validateHqConfig трактуют как "нет config"
+// (legacy-деградация), а не как ошибку.
+export function parseHqConfig(raw: unknown): HqConfig | null {
+  if (raw == null || Array.isArray(raw)) return null;
+  const parsed = hqConfigSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+
 /**
  * resolveActiveSections (D2, тотальная):
  * - config null/undefined/{} -> все секции спеки (legacy штабы без config).

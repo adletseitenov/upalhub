@@ -4,7 +4,7 @@ import { supabaseServer } from "@/lib/supabase/server";
 import { createLlm } from "@/lib/llm";
 import { examProfileSpecSchema, sourceRefSchema } from "@/features/exam-profile/spec";
 import type { StoredExamProfile } from "@/features/exam-profile/service";
-import { hqConfigSchema, validateHqConfig, type HqConfig } from "@/features/exam-profile/selection";
+import { parseHqConfig, validateHqConfig, type HqConfig } from "@/features/exam-profile/selection";
 import { supabaseTaskRepo } from "@/features/tasks/repo";
 import { supabaseTestRepo } from "@/features/tests/repo";
 import { testKindSchema } from "@/features/tests/spec";
@@ -17,14 +17,9 @@ export const maxDuration = 60;
 const bodySchema = z.object({ hqId: z.uuid(), kind: testKindSchema });
 
 // D5: study_hqs.config появляется миграцией T5 — до неё колонки в
-// database.types.ts нет, поэтому читаем defensively через cast. 🔴 Array.isArray
-// гард из ревью T1: непарсибельный/неожиданный (в т.ч. массив) jsonb -> null,
-// а не 500 — resolveActiveSections/validateHqConfig трактуют null как legacy.
-function parseHqConfig(raw: unknown): HqConfig | null {
-  if (raw == null || Array.isArray(raw)) return null;
-  const parsed = hqConfigSchema.safeParse(raw);
-  return parsed.success ? parsed.data : null;
-}
+// database.types.ts нет, поэтому читаем defensively через cast.
+// Stage3 T1: parseHqConfig (Array.isArray-гард включён) теперь живёт в
+// selection.ts — единая точка истины, консолидировано из этого дубля.
 
 // D5: config считается "непустым" (требующим validateHqConfig -> 422) только
 // если ученик реально что-то выбрал — легаси-штабы без онбординга (config

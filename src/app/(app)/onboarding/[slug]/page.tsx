@@ -1,20 +1,14 @@
 import { notFound, redirect } from "next/navigation";
 import { supabaseServer } from "@/lib/supabase/server";
 import { examProfileSpecSchema } from "@/features/exam-profile/spec";
-import { hqConfigSchema, validateHqConfig, type HqConfig } from "@/features/exam-profile/selection";
+import { parseHqConfig, validateHqConfig } from "@/features/exam-profile/selection";
 import { buildOnboardingSteps } from "@/features/onboarding/steps";
 import { OnboardingWizard } from "./OnboardingWizard";
 
-// final-review Fix1b: та же defensive-парс study_hqs.config, что и в
-// /api/tests (T4)/refill (T5) — роут-локальный хелпер, устоявшийся в репо
-// паттерн (см. jsdoc в /api/tests/route.ts). Array.isArray гард:
-// непарсибельный/неожиданный (в т.ч. массив) jsonb -> null (validateHqConfig
-// трактует null как "нет variantKey" -> невалидно, если spec.variants непуст).
-function parseHqConfig(raw: unknown): HqConfig | null {
-  if (raw == null || Array.isArray(raw)) return null;
-  const parsed = hqConfigSchema.safeParse(raw);
-  return parsed.success ? parsed.data : null;
-}
+// Stage3 T1: parseHqConfig (Array.isArray-гард включён) консолидирован в
+// selection.ts — раньше был продублирован здесь и в /api/tests/route.ts
+// (см. jsdoc в selection.ts). validateHqConfig трактует null как "нет
+// variantKey" -> невалидно, если spec.variants непуст.
 
 // D1 (Stage 2.5, Task 7): интервью-визард. Auth уже гарантирован
 // (app)/layout.tsx (redirect на /sign-in при отсутствии сессии) — здесь

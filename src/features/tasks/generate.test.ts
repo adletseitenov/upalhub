@@ -366,5 +366,54 @@ describe("generateForBucket", () => {
       expect(completeSpy).toHaveBeenCalledTimes(1); // no retry — nothing was dropped
       expect(result).toHaveLength(2);
     });
+
+    // Stage3 T1 (хвост 2.5, бэклог теста T2): enforcement применяется и к
+    // ретрай-батчу, не только к первому — requestValidTasksUnsafe вызывается
+    // с тем же bucket на обоих запросах, но раньше это не было явно
+    // проверено отдельным тестом (существующий тест дропа проверял только
+    // первый батч).
+    it("drops a passage-less audio element that appears inside the retry batch itself (not just the first batch)", async () => {
+      const longPassage = "C".repeat(60);
+      const firstBatch = [singleChoiceTaskWithPassage("F1", longPassage)]; // 1 valid -> deficit = 3 - 1 = 2
+      const retryBatch = [
+        singleChoiceTaskWithPassage("R1", longPassage), // valid
+        singleChoiceTask("R2"), // no passage field at all -> dropped, even though it's in the retry batch
+      ];
+      const llm = fakeLlm([firstBatch, retryBatch]);
+      const completeSpy = vi.spyOn(llm, "complete");
+      const repo = fakeRepo();
+      const audioBucket: Bucket = { ...bucket, modality: "audio", count: 3 };
+
+      const result = await generateForBucket({ llm, repo }, examSpec, "profile-1", audioBucket);
+
+      expect(completeSpy).toHaveBeenCalledTimes(2);
+      expect(result).toHaveLength(2); // 1 (first) + 1 (retry) — R2 dropped despite surviving genTaskSchema
+    });
+
+    // Boundary test with surrounding whitespace, proving hasRequiredPassage
+    // checks trim().length (not raw .length): 49 non-whitespace chars padded
+    // with spaces still trims down to 49 (invalid), while 50 padded the same
+    // way trims down to exactly 50 (valid) — the padding itself must not be
+    // counted toward the threshold in either direction.
+    it("trims surrounding whitespace before checking the 50-char passage threshold (49 padded fails, 50 padded passes)", async () => {
+      const only49Padded = `  ${"B".repeat(49)}  `; // trim() -> 49 chars, still short
+      const exactly50Padded = `  ${"B".repeat(50)}  `; // trim() -> exactly 50 chars, valid
+      const firstBatch = [
+        singleChoiceTaskWithPassage("Q1", exactly50Padded),
+        singleChoiceTaskWithPassage("Q2", only49Padded),
+      ]; // only Q1 valid -> deficit = count(1) - 1 = 0, no retry
+      const llm = fakeLlm([firstBatch]);
+      const completeSpy = vi.spyOn(llm, "complete");
+      const repo = fakeRepo();
+      const audioBucket: Bucket = { ...bucket, modality: "audio", count: 1 };
+
+      const result = await generateForBucket({ llm, repo }, examSpec, "profile-1", audioBucket);
+
+      expect(completeSpy).toHaveBeenCalledTimes(1); // no retry — deficit already covered
+      expect(result).toHaveLength(1);
+      // the stored passage keeps its original (untrimmed) padding — trim()
+      // only gates validity, it does not mutate the persisted body.
+      expect(result[0].body.passage).toBe(exactly50Padded);
+    });
   });
 });

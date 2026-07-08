@@ -221,4 +221,57 @@ describe("supabase migrations", () => {
     );
     expect(afterSecond.rows[0].spec).toEqual({ v: 1 });
   });
+
+  // --- Stage 3 Task 1 (D7 фундамент) -----------------------------------------
+
+  it("adds knowledge_states.answered_count/last_seen_at, forecasts.point/coverage, study_hqs.last_recomputed_at", async () => {
+    const res = await db.query<{ table_name: string; column_name: string }>(
+      `select table_name, column_name from information_schema.columns
+       where table_schema = 'public'
+         and (
+           (table_name = 'knowledge_states' and column_name in ('answered_count', 'last_seen_at'))
+           or (table_name = 'forecasts' and column_name in ('point', 'coverage'))
+           or (table_name = 'study_hqs' and column_name = 'last_recomputed_at')
+         )`,
+    );
+    const pairs = res.rows.map((r) => `${r.table_name}.${r.column_name}`).sort();
+    expect(pairs).toEqual(
+      [
+        "knowledge_states.answered_count",
+        "knowledge_states.last_seen_at",
+        "forecasts.point",
+        "forecasts.coverage",
+        "study_hqs.last_recomputed_at",
+      ].sort(),
+    );
+  });
+
+  it("creates the forecasts_hq_created_idx index", async () => {
+    const res = await db.query<{ indexname: string }>(
+      `select indexname from pg_indexes where schemaname = 'public'`,
+    );
+    const names = res.rows.map((r) => r.indexname);
+    expect(names).toContain("forecasts_hq_created_idx");
+  });
+
+  it("rejects a second study_plan_weeks row with the same (hq_id, week_start)", async () => {
+    const userId = await insertUser("s3t1-planweek@example.com");
+    const profileId = await insertProfile("s3t1-planweek-test");
+    const hq = await db.query<{ id: string }>(
+      `insert into public.study_hqs (user_id, exam_profile_id) values ('${userId}', '${profileId}') returning id`,
+    );
+    const hqId = hq.rows[0].id;
+
+    await db.exec(`
+      insert into public.study_plan_weeks (hq_id, week_start, topics)
+      values ('${hqId}', '2026-07-13', '[]'::jsonb)
+    `);
+
+    await expect(
+      db.exec(`
+        insert into public.study_plan_weeks (hq_id, week_start, topics)
+        values ('${hqId}', '2026-07-13', '[]'::jsonb)
+      `),
+    ).rejects.toThrow();
+  });
 });
