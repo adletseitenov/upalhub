@@ -7,6 +7,7 @@ import { STALE_DAYS } from "@/features/knowledge/constants";
 import {
   buildKnowledgeMapSections,
   computeGoalGap,
+  examDatePassed,
   isHqStale,
   isNarrowForecast,
   parseTargetNumber,
@@ -127,6 +128,31 @@ describe("selectCurrentWeek", () => {
   it("ignores a week with an unparseable weekStart rather than throwing", () => {
     const weeks = [week("not-a-date"), week("2026-07-06")];
     expect(selectCurrentWeek(weeks, NOW)?.weekStart).toBe("2026-07-06");
+  });
+});
+
+// --- examDatePassed (Stage3 D3-fix) ---------------------------------------------
+
+describe("examDatePassed", () => {
+  it("is false when there is no exam date", () => {
+    expect(examDatePassed(null, NOW)).toBe(false);
+  });
+
+  it("is false when the exam date is this week's Monday (boundary, not yet passed)", () => {
+    // NOW = 2026-07-08 (Wed); its Monday is 2026-07-06.
+    expect(examDatePassed(new Date("2026-07-06T00:00:00Z"), NOW)).toBe(false);
+  });
+
+  it("is false when the exam date is in the future", () => {
+    expect(examDatePassed(new Date("2026-07-13T00:00:00Z"), NOW)).toBe(false);
+  });
+
+  it("is true when the exam date is before this week's Monday", () => {
+    expect(examDatePassed(new Date("2026-07-05T00:00:00Z"), NOW)).toBe(true);
+  });
+
+  it("is true for an exam date well in the past", () => {
+    expect(examDatePassed(new Date("2026-01-01T00:00:00Z"), NOW)).toBe(true);
   });
 });
 

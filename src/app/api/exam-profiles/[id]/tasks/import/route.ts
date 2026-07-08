@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { supabaseServer } from "@/lib/supabase/server";
-import { supabaseAdmin } from "@/lib/supabase/admin";
+import { taskReadClient } from "@/lib/supabase/admin";
 import { supabaseTaskRepo } from "@/features/tasks/repo";
 import { importTasks, parseImport } from "@/features/tasks/import";
 
@@ -45,11 +45,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
 
   // Creator-гейт (created_by !== user) уже прошёл выше на user-клиенте —
-  // insertMany пишет тело задания (answer/explanation) через service-role,
-  // т.к. .select("*").single() в insertMany читает те же колонки обратно
-  // сразу после вставки, а authenticated их больше не видит (миграция
-  // 20260709130000).
-  const result = await importTasks({ repo: supabaseTaskRepo(supabaseAdmin()) }, id, valid);
+  // insertMany пишет тело задания (answer/explanation) через taskReadClient
+  // (service-role, если SUPABASE_SECRET_KEY задан; иначе временный фолбэк на
+  // user-клиент — см. src/lib/supabase/admin.ts), т.к. .select("*").single()
+  // в insertMany читает те же колонки обратно сразу после вставки.
+  const result = await importTasks({ repo: supabaseTaskRepo(taskReadClient(supabase)) }, id, valid);
 
   return NextResponse.json({
     inserted: result.inserted,

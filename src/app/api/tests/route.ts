@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { supabaseServer } from "@/lib/supabase/server";
-import { supabaseAdmin } from "@/lib/supabase/admin";
+import { taskReadClient } from "@/lib/supabase/admin";
 import { createLlm } from "@/lib/llm";
 import { examProfileSpecSchema, sourceRefSchema } from "@/features/exam-profile/spec";
 import type { StoredExamProfile } from "@/features/exam-profile/service";
@@ -87,13 +87,14 @@ export async function POST(request: Request) {
   }
 
   // hq/exam_profiles уже прочитаны и провладены выше на user-клиенте; сборка
-  // теста читает банк tasks (id/body/answer и т.п.) через service-role —
-  // после миграции 20260709130000 роль authenticated не видит answer/
-  // explanation, а таск-репо их парсит (rowToTaskSafe). testRepo — обычный
-  // user-клиент (tests/attempts не тронуты миграцией).
+  // теста читает банк tasks (id/body/answer и т.п.) через taskReadClient
+  // (service-role, если SUPABASE_SECRET_KEY задан; иначе временный фолбэк на
+  // user-клиент — см. src/lib/supabase/admin.ts), таск-репо их парсит
+  // (rowToTaskSafe). testRepo — обычный user-клиент (tests/attempts не
+  // тронуты миграцией).
   const test = await assembleTest(
     {
-      taskRepo: supabaseTaskRepo(supabaseAdmin()),
+      taskRepo: supabaseTaskRepo(taskReadClient(supabase)),
       testRepo: supabaseTestRepo(supabase),
       llm: createLlm(),
     },

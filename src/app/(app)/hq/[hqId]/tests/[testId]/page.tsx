@@ -1,13 +1,13 @@
 import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import { supabaseServer } from "@/lib/supabase/server";
-import { supabaseAdmin } from "@/lib/supabase/admin";
+import { taskReadClient } from "@/lib/supabase/admin";
 import { testSpecSchema } from "@/features/tests/spec";
 import { taskAnswerSchema, taskBodySchema } from "@/features/tasks/schema";
 import { computeDeadline } from "@/features/attempts/service";
 import { loadSimilarTasks } from "@/features/review/similar";
 import type { SimilarBucket } from "@/features/review/similar";
-import { buildReviewViewModel } from "@/features/review/view";
+import { buildReviewViewModel, bucketKey } from "@/features/review/view";
 import type { ReviewTask, ReviewViewItem } from "@/features/review/view";
 import { RefillButton } from "@/components/refill-button";
 import { TestRunner } from "./TestRunner";
@@ -104,10 +104,10 @@ export default async function TestPage({
 
     if (attemptRow.finished_at !== null) {
       // Ownership уже подтверждён выше (user-клиент) — ТЕПЕРЬ можно читать
-      // tasks.answer/explanation через service-role клиент (тот же паттерн,
-      // что и /api/attempts/[id]/submit): будущая миграция уберёт эти
-      // колонки у роли authenticated.
-      const { data: fullTaskRows } = await supabaseAdmin()
+      // tasks.answer/explanation через taskReadClient (service-role, если
+      // SUPABASE_SECRET_KEY задан; иначе временный фолбэк на user-клиент —
+      // тот же паттерн, что и /api/attempts/[id]/submit).
+      const { data: fullTaskRows } = await taskReadClient(supabase)
         .from("tasks")
         .select("id, type, topic, body, answer, explanation")
         .in("id", spec.taskIds);
@@ -171,7 +171,7 @@ export default async function TestPage({
         if (row.is_correct !== false) continue;
         const task = tasksById.get(row.task_id);
         if (!task) continue; // задание вне банка — бакет строить не из чего
-        const key = `${task.type}::${task.topic}`;
+        const key = bucketKey(task.type, task.topic);
         if (bucketKeys.has(key)) continue;
         bucketKeys.add(key);
         buckets.push({ type: task.type, topic: task.topic });

@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
-import { supabaseAdmin } from "@/lib/supabase/admin";
+import { taskReadClient } from "@/lib/supabase/admin";
 import { supabaseAttemptRepo } from "@/features/attempts/repo";
 import { supabaseTestRepo } from "@/features/tests/repo";
 import { testSpecSchema } from "@/features/tests/spec";
@@ -118,9 +118,10 @@ export async function POST(
   }
 
   // Ownership+finished+гейты подтверждены выше — только теперь читаем
-  // answer/explanation через service-role клиент (та же граница, что
-  // /submit и /tests/[testId]/page.tsx).
-  const { data: taskRow } = await supabaseAdmin().from("tasks").select("*").eq("id", taskId).maybeSingle();
+  // answer/explanation через taskReadClient (service-role, если
+  // SUPABASE_SECRET_KEY задан; иначе временный фолбэк на user-клиент — та же
+  // граница, что /submit и /tests/[testId]/page.tsx).
+  const { data: taskRow } = await taskReadClient(supabase).from("tasks").select("*").eq("id", taskId).maybeSingle();
   const stored = taskRow ? rowToStoredTask(taskRow) : null;
   if (!stored) return NextResponse.json({ error: "not_found" }, { status: 404 });
 

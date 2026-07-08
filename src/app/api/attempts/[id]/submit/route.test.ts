@@ -10,7 +10,7 @@ vi.mock("@/lib/supabase/server", () => ({
   supabaseServer: vi.fn(),
 }));
 vi.mock("@/lib/supabase/admin", () => ({
-  supabaseAdmin: vi.fn(),
+  taskReadClient: vi.fn(),
 }));
 vi.mock("@/features/attempts/repo", () => ({
   supabaseAttemptRepo: vi.fn(),
@@ -33,14 +33,14 @@ vi.mock("@/features/forecast/repo", () => ({
 }));
 
 import { supabaseServer } from "@/lib/supabase/server";
-import { supabaseAdmin } from "@/lib/supabase/admin";
+import { taskReadClient } from "@/lib/supabase/admin";
 import { supabaseAttemptRepo } from "@/features/attempts/repo";
 import { supabaseTestRepo } from "@/features/tests/repo";
 import { recomputeHqInsights } from "@/features/hq/recompute";
 import { POST, maxDuration } from "./route";
 
 const mockedSupabaseServer = vi.mocked(supabaseServer);
-const mockedSupabaseAdmin = vi.mocked(supabaseAdmin);
+const mockedTaskReadClient = vi.mocked(taskReadClient);
 const mockedAttemptRepo = vi.mocked(supabaseAttemptRepo);
 const mockedTestRepo = vi.mocked(supabaseTestRepo);
 const mockedRecompute = vi.mocked(recomputeHqInsights);
@@ -136,7 +136,7 @@ function stubAdmin(rows: unknown[]) {
       in: () => Promise.resolve({ data: rows, error: null }),
     }),
   }));
-  mockedSupabaseAdmin.mockReturnValue({ from } as never);
+  mockedTaskReadClient.mockReturnValue({ from } as never);
 }
 
 function postRequest() {

@@ -11,6 +11,7 @@ import type { KnowledgeBand } from "@/features/knowledge/constants";
 import { levelToBand } from "@/features/knowledge/constants";
 import type { Forecast } from "@/features/forecast/compute";
 import type { StoredPlanWeek } from "@/features/plan/repo";
+import { mondayUtc } from "@/features/plan/build";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const MS_PER_WEEK = 7 * MS_PER_DAY;
@@ -105,6 +106,18 @@ export function selectCurrentWeek(weeks: StoredPlanWeek[], today: Date): StoredP
     }
   }
   return best;
+}
+
+// Stage3 D3-fix: та же граница, что и buildStudyPlan (src/features/plan/
+// build.ts) использует для статуса 'examDatePassed' — examDate < mondayUtc
+// (текущего понедельника) означает горизонт плана уже заморожен в прошлом.
+// examDate=null -> false (нет даты — нечего сравнивать, обычный noExamDate
+// путь). mondayUtc возвращает UTC-date-строку 'yyyy-mm-dd'; `new Date(...)`
+// парсит её как UTC-полночь (та же конвенция, что и weekStart в
+// selectCurrentWeek выше) — сравнение TZ-стабильно.
+export function examDatePassed(examDate: Date | null, today: Date): boolean {
+  if (examDate === null) return false;
+  return examDate.getTime() < new Date(mondayUtc(today)).getTime();
 }
 
 // --- Цель vs. прогноз (D6) -------------------------------------------------

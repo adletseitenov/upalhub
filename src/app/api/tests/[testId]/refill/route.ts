@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { supabaseServer } from "@/lib/supabase/server";
-import { supabaseAdmin } from "@/lib/supabase/admin";
+import { taskReadClient } from "@/lib/supabase/admin";
 import { createLlm } from "@/lib/llm";
 import { examProfileSpecSchema, sourceRefSchema } from "@/features/exam-profile/spec";
 import type { StoredExamProfile } from "@/features/exam-profile/service";
-import { hqConfigSchema, validateHqConfig, type HqConfig } from "@/features/exam-profile/selection";
+import { parseHqConfig, validateHqConfig, type HqConfig } from "@/features/exam-profile/selection";
 import { supabaseTaskRepo } from "@/features/tasks/repo";
 import { supabaseTestRepo } from "@/features/tests/repo";
 import { reassembleTest } from "@/features/tests/assemble";
@@ -15,17 +15,9 @@ import { assemblyLimiter } from "@/features/tests/assembly-limiter";
 // бюджет, что и первая сборка) — тот же maxDuration, что у POST /api/tests.
 export const maxDuration = 60;
 
-// D5: та же defensive-парс study_hqs.config, что и в /api/tests (T4) —
-// колонка отсутствует в database.types.ts до миграции T5, поэтому читаем
-// через cast. Не переиспользуем импортом: /api/tests/route.ts не
-// экспортирует эти хелперы (устоявшийся в репо паттерн — роут-локальные
-// хелперы, см. attempts/submit route.ts rowToStoredTask). Array.isArray
-// гард: непарсибельный/неожиданный (в т.ч. массив) jsonb -> null, а не 500.
-function parseHqConfig(raw: unknown): HqConfig | null {
-  if (raw == null || Array.isArray(raw)) return null;
-  const parsed = hqConfigSchema.safeParse(raw);
-  return parsed.success ? parsed.data : null;
-}
+// Stage3 T1 (хвост 2.5): parseHqConfig — единая точка истины в
+// src/features/exam-profile/selection.ts (консолидировано из локального
+// дубля, который раньше жил здесь).
 
 // D5: config считается "непустым" (требующим validateHqConfig -> 422) только
 // если ученик реально что-то выбрал — легаси-штабы без онбординга (config
@@ -94,11 +86,11 @@ export async function POST(_request: Request, { params }: { params: Promise<{ te
   }
 
   // Тот же паттерн, что и /api/tests: hq/test/exam_profiles уже провладены
-  // выше на user-клиенте; таск-репо для дособорки — на service-role (банк
-  // читает answer/explanation, которые authenticated больше не видит после
-  // миграции 20260709130000).
+  // выше на user-клиенте; таск-репо для дособорки — через taskReadClient
+  // (service-role, если SUPABASE_SECRET_KEY задан; иначе временный фолбэк на
+  // user-клиент — см. src/lib/supabase/admin.ts).
   const newSpec = await reassembleTest(
-    { taskRepo: supabaseTaskRepo(supabaseAdmin()), llm: createLlm() },
+    { taskRepo: supabaseTaskRepo(taskReadClient(supabase)), llm: createLlm() },
     { test, examProfile, hqConfig },
   );
 

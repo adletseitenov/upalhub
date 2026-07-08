@@ -13,7 +13,7 @@ vi.mock("@/lib/supabase/server", () => ({
   supabaseServer: vi.fn(),
 }));
 vi.mock("@/lib/supabase/admin", () => ({
-  supabaseAdmin: vi.fn(),
+  taskReadClient: vi.fn(),
 }));
 vi.mock("@/features/attempts/repo", () => ({
   supabaseAttemptRepo: vi.fn(),
@@ -27,7 +27,7 @@ vi.mock("@/lib/llm", () => ({
 
 import { cookies } from "next/headers";
 import { supabaseServer } from "@/lib/supabase/server";
-import { supabaseAdmin } from "@/lib/supabase/admin";
+import { taskReadClient } from "@/lib/supabase/admin";
 import { supabaseAttemptRepo } from "@/features/attempts/repo";
 import { supabaseTestRepo } from "@/features/tests/repo";
 import { createLlm } from "@/lib/llm";
@@ -35,7 +35,7 @@ import { POST, maxDuration } from "./route";
 
 const mockedCookies = vi.mocked(cookies);
 const mockedSupabaseServer = vi.mocked(supabaseServer);
-const mockedSupabaseAdmin = vi.mocked(supabaseAdmin);
+const mockedTaskReadClient = vi.mocked(taskReadClient);
 const mockedAttemptRepo = vi.mocked(supabaseAttemptRepo);
 const mockedTestRepo = vi.mocked(supabaseTestRepo);
 const mockedCreateLlm = vi.mocked(createLlm);
@@ -147,7 +147,7 @@ function stubRepos(opts: {
 
 function stubAdmin(row: unknown | null) {
   const from = vi.fn(() => chainable({ data: row, error: null }));
-  mockedSupabaseAdmin.mockReturnValue({ from } as never);
+  mockedTaskReadClient.mockReturnValue({ from } as never);
 }
 
 function stubCookies(locale?: string) {

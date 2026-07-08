@@ -10,7 +10,7 @@ vi.mock("@/lib/supabase/server", () => ({
 // explanation) получает service-role клиент, не supabaseServer() — мокается
 // отдельно (паттерн @/lib/supabase/server рядом).
 vi.mock("@/lib/supabase/admin", () => ({
-  supabaseAdmin: vi.fn(),
+  taskReadClient: vi.fn(),
 }));
 vi.mock("@/lib/llm", () => ({
   createLlm: vi.fn(() => ({ complete: vi.fn() })),
@@ -26,18 +26,18 @@ vi.mock("@/features/tests/assemble", () => ({
 }));
 
 import { supabaseServer } from "@/lib/supabase/server";
-import { supabaseAdmin } from "@/lib/supabase/admin";
+import { taskReadClient } from "@/lib/supabase/admin";
 import { supabaseTaskRepo } from "@/features/tasks/repo";
 import { assembleTest } from "@/features/tests/assemble";
 import { POST, maxDuration } from "./route";
 
 const mockedSupabaseServer = vi.mocked(supabaseServer);
-const mockedSupabaseAdmin = vi.mocked(supabaseAdmin);
+const mockedTaskReadClient = vi.mocked(taskReadClient);
 const mockedTaskRepoFactory = vi.mocked(supabaseTaskRepo);
 const mockedAssembleTest = vi.mocked(assembleTest);
 
 // Sentinel — доказывает, что supabaseTaskRepo() был вызван именно с
-// результатом supabaseAdmin(), а не с user-клиентом (fakeSupabase ниже).
+// результатом taskReadClient(), а не с user-клиентом (fakeSupabase ниже).
 const ADMIN_CLIENT = { __tag: "admin-client" };
 
 // Валидный по RFC 9562 uuid — zod 4 z.uuid() проверяет version/variant-биты,
@@ -103,7 +103,7 @@ function validProfileRow() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockedSupabaseAdmin.mockReturnValue(ADMIN_CLIENT as never);
+  mockedTaskReadClient.mockReturnValue(ADMIN_CLIENT as never);
 });
 
 // ВАЖНО: rate limiter в route.ts — модульный синглтон, его состояние живёт
@@ -151,7 +151,7 @@ describe("POST /api/tests", () => {
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: "not_found" });
     expect(mockedAssembleTest).not.toHaveBeenCalled();
-    expect(mockedSupabaseAdmin).not.toHaveBeenCalled();
+    expect(mockedTaskReadClient).not.toHaveBeenCalled();
   });
 
   it("429s once the caller's token bucket (capacity 5) is exhausted", async () => {
@@ -203,10 +203,11 @@ describe("POST /api/tests", () => {
     expect(JSON.stringify(body)).not.toContain("answer");
     expect(mockedAssembleTest).toHaveBeenCalledTimes(1);
 
-    // D-security1 fix: банк заданий читается через service-role клиент
-    // (supabaseAdmin()), а не через user-клиент — authenticated не видит
-    // tasks.answer/explanation после миграции 20260709130000.
-    expect(mockedSupabaseAdmin).toHaveBeenCalledTimes(1);
+    // D-security1 fix: банк заданий читается через taskReadClient
+    // (service-role, если ключ задан), а не через user-клиент напрямую —
+    // authenticated не видит tasks.answer/explanation после миграции
+    // 20260709130000.
+    expect(mockedTaskReadClient).toHaveBeenCalledTimes(1);
     expect(mockedTaskRepoFactory).toHaveBeenCalledWith(ADMIN_CLIENT);
   });
 

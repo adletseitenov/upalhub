@@ -9,6 +9,7 @@ import type { Forecast, ForecastConfidence } from "@/features/forecast/compute";
 import type { TestKind } from "@/features/tests/spec";
 import {
   buildKnowledgeMapSections,
+  examDatePassed,
   isHqStale,
   parseTargetNumber,
   selectCurrentWeek,
@@ -154,6 +155,13 @@ export default async function HqDashboardPage({
   // если недели нет вовсе.
   const suggestedKind: TestKind = currentWeek?.topics.suggestedTest.kind ?? "diagnostic";
 
+  // Stage3 D3-fix: дата экзамена в прошлом (relative to mondayUtc(now)) —
+  // buildStudyPlan уже отказался строить план для неё (status
+  // 'examDatePassed', weeks=[] — см. src/features/plan/build.ts), поэтому
+  // currentWeek здесь всегда null в этом случае и WeekPlanCard молча ничего
+  // не рендерит. Явный баннер вместо тишины — подталкивает поправить дату.
+  const examHasPassed = examDatePassed(examDate, now);
+
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-6 p-6">
       <h1 className="text-xl font-semibold">{profile.title}</h1>
@@ -175,7 +183,13 @@ export default async function HqDashboardPage({
         <KnowledgeMap sections={mapSections} />
       )}
 
-      <WeekPlanCard examDateIsSet={examDate !== null} currentWeek={currentWeek} />
+      {examHasPassed ? (
+        <section className="flex flex-col gap-2 rounded border border-amber-300 bg-amber-50 p-4">
+          <p className="text-sm text-amber-800">{t("examDatePassed")}</p>
+        </section>
+      ) : (
+        <WeekPlanCard examDateIsSet={examDate !== null} currentWeek={currentWeek} />
+      )}
 
       {!mapEmpty && <StartTestButton hqId={hqId} slug={profile.slug} kind={suggestedKind} />}
 
