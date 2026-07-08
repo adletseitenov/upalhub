@@ -15,20 +15,34 @@ export function ExamSearchForm() {
     if (busy || query.trim().length < 2) return;
     setBusy(true);
     setError(null);
-    const res = await fetch("/api/exam-profiles", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: query.trim() }),
-    });
-    if (res.status === 401) return router.push("/sign-in");
-    if (res.ok) {
-      const { slug } = (await res.json()) as { slug: string };
-      // D1 (Stage 2.5): после research юзер идёт в интервью-визард, а не
-      // сразу на библиотечную страницу профиля.
-      return router.push(`/onboarding/${slug}`);
+    try {
+      const res = await fetch("/api/exam-profiles", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: query.trim() }),
+      });
+      if (res.status === 401) return router.push("/sign-in");
+      if (res.status === 429) {
+        // 🔴 final-review Fix5: раньше 429 падал в общий t("error") — не
+        // объясняло, что это временный лимит, а не поломка.
+        setError(t("rateLimited"));
+        setBusy(false);
+        return;
+      }
+      if (res.ok) {
+        const { slug } = (await res.json()) as { slug: string };
+        // D1 (Stage 2.5): после research юзер идёт в интервью-визард, а не
+        // сразу на библиотечную страницу профиля.
+        return router.push(`/onboarding/${slug}`);
+      }
+      setError(res.status === 404 ? t("notFound") : t("error"));
+      setBusy(false);
+    } catch {
+      // 🔴 final-review Fix5: сетевой сбой/исключение (T7-визард паттерн) —
+      // не оставляем форму зависшей в busy без обратной связи.
+      setError(t("error"));
+      setBusy(false);
     }
-    setError(res.status === 404 ? t("notFound") : t("error"));
-    setBusy(false);
   }
 
   return (

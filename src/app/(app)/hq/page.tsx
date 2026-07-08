@@ -30,7 +30,7 @@ export default async function HqPage() {
               <Link className="underline" href={`/exams/${hq.exam_profiles?.slug}`}>
                 {hq.exam_profiles?.title}
               </Link>
-              <StartTestButton hqId={hq.id} />
+              <StartTestButton hqId={hq.id} slug={hq.exam_profiles?.slug ?? ""} />
             </li>
           ))}
         </ul>
