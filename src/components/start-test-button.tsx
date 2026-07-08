@@ -3,14 +3,29 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
+import type { TestKind } from "@/features/tests/spec";
 import { GeneratingState } from "./GeneratingState";
 
 // Точка запуска движка тестов из штаба (D3/Task 6): POST /api/tests
-// собирает (или переиспользует тёплый банк) диагностику и возвращает
-// testId — дальше юзер идёт на страницу прохождения, которая сама стартует
-// попытку (POST /api/attempts). slug нужен для 422-ветки ниже (ссылка назад
-// в визард переконфигурации).
-export function StartTestButton({ hqId, slug }: { hqId: string; slug: string }) {
+// собирает (или переиспользует тёплый банк) тест и возвращает testId —
+// дальше юзер идёт на страницу прохождения, которая сама стартует попытку
+// (POST /api/attempts). slug нужен для 422-ветки ниже (ссылка назад в
+// визард переконфигурации).
+//
+// 🔴 Task 6 red-team: `kind` — явный проп (default 'diagnostic', обратная
+// совместимость со старым единственным вызовом из hq/page.tsx). Без него
+// mock-калибровка (D4) мертва: дашборд предлагает suggestedTest.kind
+// последней недели плана ('mock' на пред-экзаменационной неделе), и без
+// проброса kind сюда кнопка всегда собирала бы diagnostic вместо mock.
+export function StartTestButton({
+  hqId,
+  slug,
+  kind = "diagnostic",
+}: {
+  hqId: string;
+  slug: string;
+  kind?: TestKind;
+}) {
   const router = useRouter();
   const t = useTranslations("testRunner");
   const [busy, setBusy] = useState(false);
@@ -27,7 +42,7 @@ export function StartTestButton({ hqId, slug }: { hqId: string; slug: string }) 
       const res = await fetch("/api/tests", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hqId, kind: "diagnostic" }),
+        body: JSON.stringify({ hqId, kind }),
       });
       // 401/ok оставляют busy=true (GeneratingState) до завершения навигации —
       // setBusy(false) только на путях, где остаёмся на этой же странице.

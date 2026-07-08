@@ -27,8 +27,17 @@ export default async function HqPage() {
         <ul className="flex flex-col gap-2">
           {hqs.map((hq) => (
             <li key={hq.id} className="flex flex-col gap-2 rounded border p-3">
-              <Link className="underline" href={`/exams/${hq.exam_profiles?.slug}`}>
+              {/* Task 6: заголовок карточки ведёт на дашборд штаба; ссылка на
+                  профиль экзамена (варианты/секции/источники) сохранена как
+                  вторичная. */}
+              <Link className="font-medium underline" href={`/hq/${hq.id}`}>
                 {hq.exam_profiles?.title}
+              </Link>
+              <Link
+                className="text-sm text-gray-500 underline"
+                href={`/exams/${hq.exam_profiles?.slug}`}
+              >
+                {t("profileLink")}
               </Link>
               <StartTestButton hqId={hq.id} slug={hq.exam_profiles?.slug ?? ""} />
             </li>
