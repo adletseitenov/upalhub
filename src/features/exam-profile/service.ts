@@ -17,7 +17,25 @@ export type StoredExamProfile = NewExamProfile & { id: string };
 
 export interface ExamProfileRepo {
   findBySlug(slug: string): Promise<StoredExamProfile | null>;
+  // D-important4: findBySlug returns null for BOTH "no row at this slug" and
+  // "a row exists at this slug but its spec fails current-schema safeParse"
+  // (corrupt/stale — see rowToProfile). Those two outcomes must be
+  // distinguishable BEFORE spending on research, or a permanently-corrupt
+  // row makes findOrCreateExamProfile waste a full research spend and then
+  // 500 (raw 23505) on every identical query. existsBySlug does a raw
+  // existence check that bypasses spec parsing entirely.
+  existsBySlug(slug: string): Promise<boolean>;
   insert(p: NewExamProfile): Promise<StoredExamProfile>;
+}
+
+// Surfaced by findOrCreateExamProfile when a physical row already occupies
+// the target slug but cannot be parsed into a StoredExamProfile — the route
+// layer should map this to a handled 409, not rethrow into a raw 500.
+export class ExamProfileSlugConflictError extends Error {
+  constructor(public readonly slug: string) {
+    super(`exam_profiles row at slug "${slug}" exists but is unparseable (corrupt/stale spec)`);
+    this.name = "ExamProfileSlugConflictError";
+  }
 }
 
 // D3/Task5: opts аддитивны — старые вызовы (без opts) ведут себя как раньше.
@@ -34,6 +52,13 @@ export async function findOrCreateExamProfile(
   const slug = opts?.slugOverride ?? slugifyExamQuery(rawQuery);
   const existing = await deps.repo.findBySlug(slug);
   if (existing) return { profile: existing, created: false };
+
+  // D-important4: existing === null could mean "no row" (proceed to research)
+  // OR "row exists but is corrupt" (must NOT spend on research — it would
+  // just hit 23505 on insert and repeat forever). Check BEFORE spending.
+  if (await deps.repo.existsBySlug(slug)) {
+    throw new ExamProfileSlugConflictError(slug);
+  }
 
   const { spec, sources } = await researchExam(deps, rawQuery, { avoid: opts?.avoid });
   const profile = await deps.repo.insert({

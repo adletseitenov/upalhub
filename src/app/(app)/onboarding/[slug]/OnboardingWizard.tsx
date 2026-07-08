@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import type { ExamVariant, SelectionGroup } from "@/features/exam-profile/spec";
 import {
   defaultConfig,
+  reconcileDraft,
   selectionPools,
   type OnboardingStep,
   type SelectionPoolEntry,
@@ -152,15 +153,29 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
 
   const specForPools = { variants: props.variants, selectionGroups: props.selectionGroups };
 
+  // D-important5: a draft persisted from a PRIOR onboarding session for this
+  // slug can reference section names / a variantKey the CURRENT spec no
+  // longer has (spec refined via /api/exam-profiles/refine after the draft
+  // was saved) — reconcile against props (the current spec) before seeding
+  // state, or a stale name with no UI control to remove it locks finish
+  // behind a permanent 422 (see reconcileDraft jsdoc).
+  function loadReconciledDraft(): Draft | null {
+    const raw = loadDraft(props.slug);
+    if (!raw) return null;
+    const validSectionNames = new Set(props.sections.map((s) => s.name));
+    const validVariantKeys = new Set(props.variants.map((v) => v.key));
+    return reconcileDraft(raw, validSectionNames, validVariantKeys);
+  }
+
   const [stepIndex, setStepIndex] = useState(0);
-  const [variantKey, setVariantKey] = useState<string | null>(() => loadDraft(props.slug)?.variantKey ?? null);
+  const [variantKey, setVariantKey] = useState<string | null>(() => loadReconciledDraft()?.variantKey ?? null);
   const [selected, setSelected] = useState<Set<string>>(() => {
-    const draft = loadDraft(props.slug);
+    const draft = loadReconciledDraft();
     if (draft) return new Set(draft.selected);
     return new Set(defaultConfig(specForPools, null).selectedSectionNames);
   });
   const [examDate, setExamDate] = useState<string | null | "skipped">(
-    () => loadDraft(props.slug)?.examDate ?? null,
+    () => loadReconciledDraft()?.examDate ?? null,
   );
   const [busy, setBusy] = useState(false);
   const [researching, setResearching] = useState(false);

@@ -43,10 +43,16 @@ export function parseHqConfig(raw: unknown): HqConfig | null {
  * - variantKey найден -> база сужается до секций, чьи имена входят в
  *   variant.sectionNames.
  * - Для каждой selectionGroup: пул = group.sectionNames ∩ имена текущей базы.
- *   Пустой пул -> группа не относится к текущей базе/варианту, пропускаем.
  *   Непустой пул -> члены пула исключаются из базы и возвращаются ТОЛЬКО те
  *   из них, что перечислены в selectedSectionNames (несуществующие/устаревшие
  *   имена в selectedSectionNames молча дропаются — не влияют ни на что).
+ *   Пустой пул (группа ОРТОГОНАЛЬНА текущему варианту — ни один её член не
+ *   входит в базу) -> ДОЛЖНА совпадать с фолбэком validateHqConfig
+ *   (D-important3): пул = вся group.sectionNames, а выбранные из него имена
+ *   (существующие в spec.sections) ДОБАВЛЯЮТСЯ в базу. Иначе config,
+ *   прошедший validateHqConfig (который в этой ветке требует ровно выбор из
+ *   полного пула), молча теряет выбранную ортогональную секцию при сборке
+ *   теста. Ничего не выбрано -> группа отсутствует в результате (как и раньше).
  */
 export function resolveActiveSections(
   spec: ExamProfileSpec,
@@ -63,10 +69,25 @@ export function resolveActiveSections(
     ? spec.sections.filter((s) => variant.sectionNames.includes(s.name))
     : spec.sections;
 
+  const sectionByName = new Map(spec.sections.map((s) => [s.name, s] as const));
+
   for (const group of spec.selectionGroups) {
     const baseNames = new Set(base.map((s) => s.name));
     const pool = group.sectionNames.filter((name) => baseNames.has(name));
-    if (pool.length === 0) continue; // группа не относится к текущей базе/варианту
+
+    if (pool.length === 0) {
+      // Ортогональная группа: пул совпадает с полным group.sectionNames
+      // (симметрично validateHqConfig), выбранные члены добавляются в базу.
+      const chosenNames = group.sectionNames.filter((name) => selected.has(name));
+      for (const name of chosenNames) {
+        const section = sectionByName.get(name);
+        if (section && !baseNames.has(name)) {
+          base = [...base, section];
+          baseNames.add(name);
+        }
+      }
+      continue;
+    }
 
     const poolSet = new Set(pool);
     const chosen = new Set(pool.filter((name) => selected.has(name)));

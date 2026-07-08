@@ -74,3 +74,24 @@ describe("supabaseExamProfileRepo.findBySlug (rowToProfile safeParse, Stage3 T1)
     expect(profile).toBeNull();
   });
 });
+
+// D-important4: existsBySlug is the raw-existence counterpart to findBySlug —
+// it must report a row present EVEN WHEN findBySlug would return null for it
+// (corrupt/stale spec), so callers can distinguish "no row" from "corrupt row".
+describe("supabaseExamProfileRepo.existsBySlug (D-important4)", () => {
+  it("returns true when a row physically exists, regardless of spec validity", async () => {
+    const { client } = makeFindClient({ data: { id: "profile-1" } as unknown as Row, error: null });
+
+    const exists = await supabaseExamProfileRepo(client).existsBySlug("ent-2027");
+
+    expect(exists).toBe(true);
+  });
+
+  it("returns false when no row exists at the slug", async () => {
+    const { client } = makeFindClient({ data: null, error: null });
+
+    const exists = await supabaseExamProfileRepo(client).existsBySlug("does-not-exist");
+
+    expect(exists).toBe(false);
+  });
+});

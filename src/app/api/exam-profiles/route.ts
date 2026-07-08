@@ -3,7 +3,11 @@ import { z } from "zod";
 import { supabaseServer } from "@/lib/supabase/server";
 import { createLlm } from "@/lib/llm";
 import { createSearch } from "@/lib/search";
-import { findOrCreateExamProfile, type StoredExamProfile } from "@/features/exam-profile/service";
+import {
+  findOrCreateExamProfile,
+  ExamProfileSlugConflictError,
+  type StoredExamProfile,
+} from "@/features/exam-profile/service";
 import { supabaseExamProfileRepo } from "@/features/exam-profile/repo";
 import { ResearchError } from "@/features/exam-profile/research";
 import { researchLimiter } from "@/features/exam-profile/research-limiter";
@@ -95,6 +99,11 @@ export async function POST(request: Request) {
   } catch (e) {
     if (e instanceof ResearchError) {
       return NextResponse.json({ error: "not_found" }, { status: 404 });
+    }
+    // D-important4: slug occupied by a corrupt/unparseable row — handled
+    // degraded response, not a raw 500 (and no research spend was made).
+    if (e instanceof ExamProfileSlugConflictError) {
+      return NextResponse.json({ error: "slug_conflict" }, { status: 409 });
     }
     throw e;
   }

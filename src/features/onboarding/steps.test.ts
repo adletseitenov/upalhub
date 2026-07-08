@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { examProfileSpecSchema, type ExamProfileSpec } from "@/features/exam-profile/spec";
-import { buildOnboardingSteps, defaultConfig, selectionPools } from "./steps";
+import { buildOnboardingSteps, defaultConfig, reconcileDraft, selectionPools } from "./steps";
 
 const baseFields = {
   language: "en",
@@ -132,5 +132,52 @@ describe("defaultConfig (D1 деградация)", () => {
       variantKey: null,
       selectedSectionNames: [],
     });
+  });
+});
+
+// D-important5: a localStorage onboarding draft can outlive a spec refine —
+// reconcileDraft must drop what the current spec no longer knows about
+// (stale section names / variantKey), matching the lockout scenario where a
+// refined spec renamed/removed "Английский" and the draft still references it.
+describe("reconcileDraft (D-important5)", () => {
+  const validSectionNames = new Set(["Математика", "Английский", "Немецкий"]);
+  const validVariantKeys = new Set(["phys-math", "chem"]);
+
+  it("keeps a draft whose selected names and variantKey are all still valid", () => {
+    const draft = { variantKey: "phys-math", selected: ["Английский"] };
+    expect(reconcileDraft(draft, validSectionNames, validVariantKeys)).toEqual({
+      variantKey: "phys-math",
+      selected: ["Английский"],
+    });
+  });
+
+  it("drops a stale selected section name absent from the current spec", () => {
+    const draft = { variantKey: null, selected: ["Английский", "Испанский"] };
+    expect(reconcileDraft(draft, validSectionNames, validVariantKeys)).toEqual({
+      variantKey: null,
+      selected: ["Английский"],
+    });
+  });
+
+  it("drops the whole selection when NONE of the draft's names are still valid (the lockout scenario)", () => {
+    const draft = { variantKey: null, selected: ["Английский"] };
+    const onlyMathValid = new Set(["Математика"]); // "Английский" was removed by a spec refine
+    expect(reconcileDraft(draft, onlyMathValid, validVariantKeys)).toEqual({
+      variantKey: null,
+      selected: [],
+    });
+  });
+
+  it("resets a stale variantKey to null", () => {
+    const draft = { variantKey: "ghost-variant", selected: [] };
+    expect(reconcileDraft(draft, validSectionNames, validVariantKeys)).toEqual({
+      variantKey: null,
+      selected: [],
+    });
+  });
+
+  it("leaves a null variantKey as null (not a throw / not coerced)", () => {
+    const draft = { variantKey: null, selected: [] };
+    expect(reconcileDraft(draft, validSectionNames, validVariantKeys).variantKey).toBeNull();
   });
 });

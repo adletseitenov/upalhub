@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import { fakeLlm } from "@/lib/llm";
 import type { Llm } from "@/lib/llm";
 import { fakeSearch } from "@/lib/search";
-import { findOrCreateExamProfile, type ExamProfileRepo, type StoredExamProfile } from "./service";
+import {
+  findOrCreateExamProfile,
+  ExamProfileSlugConflictError,
+  type ExamProfileRepo,
+  type StoredExamProfile,
+} from "./service";
 
 const specFixture = {
   examName: "ЕНТ",
@@ -12,12 +17,22 @@ const specFixture = {
   scoring: { scaleMin: 0, scaleMax: 140, unit: "баллов" },
 };
 
-function memoryRepo(seed: StoredExamProfile[] = []): ExamProfileRepo & { rows: StoredExamProfile[] } {
+// corruptSlugs: slugs that are "physically occupied" but whose row fails
+// spec safeParse — findBySlug (mirroring rowToProfile) returns null for
+// them, while existsBySlug (raw existence check, D-important4) returns true.
+function memoryRepo(
+  seed: StoredExamProfile[] = [],
+  corruptSlugs: string[] = [],
+): ExamProfileRepo & { rows: StoredExamProfile[] } {
   const rows = [...seed];
+  const corrupt = new Set(corruptSlugs);
   return {
     rows,
     async findBySlug(slug) {
       return rows.find((r) => r.slug === slug) ?? null;
+    },
+    async existsBySlug(slug) {
+      return corrupt.has(slug) || rows.some((r) => r.slug === slug);
     },
     async insert(p) {
       const stored = { ...p, id: `id-${rows.length + 1}` } as StoredExamProfile;
@@ -104,5 +119,28 @@ describe("findOrCreateExamProfile", () => {
       { avoid: { name: "SAT", country: "США" } },
     );
     expect(calls[0].prompt).toContain('пользователь уточнил, что это НЕ "SAT" (США)');
+  });
+
+  // --- D-important4: corrupt/stale row at the target slug -------------------
+
+  it("throws ExamProfileSlugConflictError without spending on research when the slug is occupied by a corrupt row", async () => {
+    const repo = memoryRepo([], ["ent-2027"]);
+    const llm = fakeLlm([]); // бросит, если сервис всё-таки вызовет research -> подтверждает "no spend"
+
+    await expect(
+      findOrCreateExamProfile({ llm, search: fakeSearch([]), repo }, "ЕНТ 2027"),
+    ).rejects.toThrow(ExamProfileSlugConflictError);
+  });
+
+  it("keeps throwing ExamProfileSlugConflictError (not just once) for a permanently corrupt slug", async () => {
+    const repo = memoryRepo([], ["ent-2027"]);
+    const llm = fakeLlm([]);
+
+    await expect(
+      findOrCreateExamProfile({ llm, search: fakeSearch([]), repo }, "ЕНТ 2027"),
+    ).rejects.toThrow(ExamProfileSlugConflictError);
+    await expect(
+      findOrCreateExamProfile({ llm, search: fakeSearch([]), repo }, "ЕНТ 2027"),
+    ).rejects.toThrow(ExamProfileSlugConflictError);
   });
 });

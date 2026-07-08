@@ -48,6 +48,18 @@ export function supabaseExamProfileRepo(
       return data ? rowToProfile(data) : null;
     },
 
+    // D-important4: raw existence check — bypasses examProfileSpecSchema
+    // parsing entirely, so a corrupt/stale spec still reports "exists".
+    async existsBySlug(slug) {
+      const { data, error } = await client
+        .from("exam_profiles")
+        .select("id")
+        .eq("slug", slug)
+        .maybeSingle();
+      if (error) throw error;
+      return data !== null;
+    },
+
     async insert(p: NewExamProfile) {
       const { data, error } = await client
         .from("exam_profiles")

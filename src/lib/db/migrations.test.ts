@@ -7,6 +7,16 @@ const MIGRATIONS_DIR = join(process.cwd(), "supabase", "migrations");
 
 // Заглушка supabase-окружения: схема auth, auth.uid() и роли anon/authenticated,
 // которых нет в чистом Postgres, но которые Supabase создаёт на платформе.
+//
+// D-security1/D-security6: auth.uid() читает сессионный GUC
+// request.jwt.claim.sub (пусто по умолчанию -> null, как и раньше — старое
+// поведение не меняется, пока тест явно не вызовет `set request.jwt.claim.sub`),
+// а default privileges на public-схеме мимикрируют реальную платформу
+// Supabase (`grant all on tables to anon, authenticated` заранее для всех
+// таблиц, создаваемых миграциями) — БЕЗ этого локальный тестовый Postgres не
+// воспроизводит уязвимость "RLS using(true) + platform-default grant", и
+// column-level/policy-level фиксы (см. новые миграции) нечем было бы
+// поведенчески проверить.
 const SUPABASE_STUB = `
   create role anon;
   create role authenticated;
@@ -16,8 +26,30 @@ const SUPABASE_STUB = `
     email text
   );
   create function auth.uid() returns uuid
-  language sql stable as $$ select null::uuid $$;
+  language sql stable as $$
+    select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
+  $$;
+  grant usage on schema public to anon, authenticated;
+  alter default privileges in schema public grant all on tables to anon, authenticated;
 `;
+
+// Переключает текущую Postgres-сессию на роль anon/authenticated с заданным
+// auth.uid() — эмулирует прямой PostgREST-запрос анон/JWT-ключом. reset role
+// — session-level (не set local), так что действует до явного вызова asRole
+// заново/reset; тесты вызывают его в try/finally.
+async function asRole(
+  db: PGlite,
+  role: "anon" | "authenticated",
+  userId: string | null,
+): Promise<void> {
+  await db.exec(`set role ${role}`);
+  await db.exec(`set request.jwt.claim.sub = '${userId ?? ""}'`);
+}
+
+async function resetRole(db: PGlite): Promise<void> {
+  await db.exec(`reset role`);
+  await db.exec(`reset request.jwt.claim.sub`);
+}
 
 const EXPECTED_TABLES = [
   "profiles",
@@ -98,15 +130,18 @@ describe("supabase migrations", () => {
     );
   });
 
-  it("tightens tasks insert RLS to profile-creator and ai-origin-only policies", async () => {
+  it("tightens tasks insert RLS to profile-creator and ai-insert-by-hq-owner policies", async () => {
     const res = await db.query<{ polname: string }>(
       `select p.polname from pg_policy p
        join pg_class c on c.oid = p.polrelid
        where c.relname = 'tasks' and p.polcmd = 'a'`,
     );
     const names = res.rows.map((r) => r.polname).sort();
+    // D-security6: "tasks ai insert by any authenticated" (bare origin='ai'
+    // check, no ownership relation) was replaced by "tasks ai insert by hq
+    // owner" — see the poisoning test below for the behavioral pin.
     expect(names).toEqual(
-      ["tasks insert by profile creator", "tasks ai insert by any authenticated"].sort(),
+      ["tasks insert by profile creator", "tasks ai insert by hq owner"].sort(),
     );
   });
 
@@ -273,5 +308,70 @@ describe("supabase migrations", () => {
         values ('${hqId}', '2026-07-13', '[]'::jsonb)
       `),
     ).rejects.toThrow();
+  });
+
+  // --- Mega-review wave: D-security1 (tasks.answer/explanation leak) --------
+
+  it("D-security1: anon/authenticated cannot SELECT tasks.answer/tasks.explanation, but can read non-answer columns", async () => {
+    const profileId = await insertProfile("s1-select-test");
+    await db.exec(`
+      insert into public.tasks (exam_profile_id, type, topic, difficulty, language, body, answer, explanation, origin)
+      values ('${profileId}', 'reading', 'topic-a', 1, 'ru', '{"prompt":"x"}'::jsonb, '{"correct":true}'::jsonb, 'because', 'import')
+    `);
+
+    await asRole(db, "anon", null);
+    try {
+      await expect(db.query(`select answer from public.tasks limit 1`)).rejects.toThrow();
+      await expect(db.query(`select explanation from public.tasks limit 1`)).rejects.toThrow();
+      const bodyRes = await db.query<{ body: unknown }>(`select id, body from public.tasks limit 1`);
+      expect(bodyRes.rows.length).toBe(1);
+    } finally {
+      await resetRole(db);
+    }
+  });
+
+  // --- Mega-review wave: D-security6 (tasks ai-insert task-bank poisoning) --
+
+  it("D-security6: rejects an AI-origin task insert into an exam_profile_id the caller owns no study_hq for", async () => {
+    const ownerId = await insertUser("s6-owner@example.com");
+    const attackerId = await insertUser("s6-attacker@example.com");
+    const profileId = await insertProfile("s6-poison-test");
+    await db.exec(
+      `insert into public.study_hqs (user_id, exam_profile_id) values ('${ownerId}', '${profileId}')`,
+    );
+
+    await asRole(db, "authenticated", attackerId);
+    try {
+      await expect(
+        db.exec(`
+          insert into public.tasks (exam_profile_id, type, topic, difficulty, language, body, answer, explanation, origin)
+          values ('${profileId}', 'reading', 'topic-a', 1, 'ru', '{}'::jsonb, '{"wrong":true}'::jsonb, 'attacker-controlled', 'ai')
+        `),
+      ).rejects.toThrow();
+    } finally {
+      await resetRole(db);
+    }
+  });
+
+  it("D-security6: allows an AI-origin task insert into an exam_profile_id the caller owns a study_hq for", async () => {
+    const userId = await insertUser("s6-legit@example.com");
+    const profileId = await insertProfile("s6-legit-test");
+    await db.exec(
+      `insert into public.study_hqs (user_id, exam_profile_id) values ('${userId}', '${profileId}')`,
+    );
+
+    await asRole(db, "authenticated", userId);
+    try {
+      await db.exec(`
+        insert into public.tasks (exam_profile_id, type, topic, difficulty, language, body, answer, explanation, origin)
+        values ('${profileId}', 'reading', 'topic-a', 1, 'ru', '{}'::jsonb, '{}'::jsonb, null, 'ai')
+      `);
+      const res = await db.query<{ id: string }>(
+        `select id from public.tasks where exam_profile_id = '${profileId}'`,
+      );
+      expect(res.rows.length).toBe(1);
+    } finally {
+      await resetRole(db);
+    }
   });
 });

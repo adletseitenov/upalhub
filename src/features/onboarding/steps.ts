@@ -68,3 +68,34 @@ export function defaultConfig(spec: StepsSpec, variantKey: string | null): Draft
   const selectedSectionNames = pools.filter((p) => p.degraded).flatMap((p) => p.pool);
   return { variantKey, selectedSectionNames };
 }
+
+// D-important5: shape of a persisted OnboardingWizard localStorage draft —
+// deliberately loose (subset of the wizard's own Draft type) so this module
+// stays free of any client/DOM import.
+export type DraftLike = {
+  variantKey: string | null;
+  selected: string[];
+};
+
+/**
+ * reconcileDraft (D-important5): a localStorage draft saved from a PRIOR
+ * onboarding session for this slug can reference a variantKey/section names
+ * that no longer exist in the CURRENT spec (the profile spec can be refined
+ * via /api/exam-profiles/refine after the draft was saved, while the slug
+ * stays the same). Restoring stale names verbatim into wizard state merges
+ * them into the submitted config (effectiveSelectedNames) with no UI control
+ * to remove them (they render in no current pool) -> validateHqConfig 422s
+ * forever on finish. Drop what the current spec no longer knows about BEFORE
+ * seeding wizard state from the draft.
+ */
+export function reconcileDraft<D extends DraftLike>(
+  draft: D,
+  validSectionNames: ReadonlySet<string>,
+  validVariantKeys: ReadonlySet<string>,
+): D {
+  return {
+    ...draft,
+    variantKey: draft.variantKey != null && validVariantKeys.has(draft.variantKey) ? draft.variantKey : null,
+    selected: draft.selected.filter((name) => validSectionNames.has(name)),
+  };
+}

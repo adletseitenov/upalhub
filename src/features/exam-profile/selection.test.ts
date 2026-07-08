@@ -203,6 +203,29 @@ describe("resolveActiveSections (totality, D2)", () => {
     expect(active.map((s) => s.name).sort()).toEqual(["Математика", "Физика"]);
   });
 
+  // D-important3: resolveActiveSections must agree with validateHqConfig on
+  // orthogonal groups (group.sectionNames disjoint from the variant base) —
+  // validateHqConfig falls back to the FULL group pool and accepts the
+  // selection, so resolveActiveSections must union the chosen out-of-variant
+  // member INTO the base instead of silently skipping the group (previously
+  // a validated config could still lose the user's selected section).
+  it("unions a selected orthogonal-group section (disjoint from the variant) into the base", () => {
+    const config = { variantKey: "v2", selectedSectionNames: ["B"] };
+    // pin agreement: validateHqConfig must accept this exact config...
+    expect(validateHqConfig(orthogonalSpec, config)).toEqual({ ok: true });
+    // ...and resolveActiveSections must not silently drop "B".
+    const active = resolveActiveSections(orthogonalSpec, config);
+    expect(active.map((s) => s.name).sort()).toEqual(["A", "B"]);
+  });
+
+  it("drops the orthogonal group entirely when nothing from it is selected (still total, no throw)", () => {
+    const active = resolveActiveSections(orthogonalSpec, {
+      variantKey: "v2",
+      selectedSectionNames: [],
+    });
+    expect(active.map((s) => s.name)).toEqual(["A"]);
+  });
+
   it("is total even for a degraded (unsatisfiable) group selection: returns whatever was actually selected", () => {
     expect(() =>
       resolveActiveSections(degradedSpec, { variantKey: "v1", selectedSectionNames: ["B"] }),

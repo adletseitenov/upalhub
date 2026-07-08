@@ -9,9 +9,13 @@ vi.mock("@/lib/llm", () => ({
 vi.mock("@/lib/search", () => ({
   createSearch: vi.fn(() => ({ search: vi.fn(), fetchPage: vi.fn() })),
 }));
-vi.mock("@/features/exam-profile/service", () => ({
-  findOrCreateExamProfile: vi.fn(),
-}));
+vi.mock("@/features/exam-profile/service", async (importOriginal) => {
+  // ExamProfileSlugConflictError must stay the REAL class (not mocked away)
+  // so route.ts's `e instanceof ExamProfileSlugConflictError` check still
+  // works against the real export identity.
+  const actual = await importOriginal<typeof import("@/features/exam-profile/service")>();
+  return { ...actual, findOrCreateExamProfile: vi.fn() };
+});
 vi.mock("@/features/exam-profile/repo", () => ({
   supabaseExamProfileRepo: vi.fn(),
 }));
@@ -20,6 +24,7 @@ import { supabaseServer } from "@/lib/supabase/server";
 import { findOrCreateExamProfile } from "@/features/exam-profile/service";
 import { supabaseExamProfileRepo } from "@/features/exam-profile/repo";
 import { ResearchError } from "@/features/exam-profile/research";
+import { ExamProfileSlugConflictError } from "@/features/exam-profile/service";
 import type { StoredExamProfile } from "@/features/exam-profile/service";
 import { POST } from "./route";
 
@@ -150,6 +155,17 @@ describe("POST /api/exam-profiles", () => {
 
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: "not_found" });
+  });
+
+  it("409s (not a raw 500) when findOrCreateExamProfile throws ExamProfileSlugConflictError", async () => {
+    stubUser("u-corrupt-slug");
+    stubRepo(async () => null);
+    mockedFindOrCreate.mockRejectedValue(new ExamProfileSlugConflictError("ent-2027"));
+
+    const res = await POST(postRequest({ query: "ЕНТ 2027" }));
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "slug_conflict" });
   });
 
   it("429s once the caller's token bucket (capacity 3) is exhausted", async () => {

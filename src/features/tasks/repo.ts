@@ -37,9 +37,18 @@ function normalizePrompt(prompt: string): string {
   return prompt.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-// D2: sha256(normalized(prompt) + sorted(options[].text)); text_input — только prompt.
+// D2: sha256(format + normalized(prompt) + normalized(passage) + sorted(options[].text));
+// text_input — без options.
+// D-important2: passage ОБЯЗАН участвовать в хэше — иначе два разных
+// аудио/reading-задания с общим generic-стемом и набором опций (разный
+// passage, тот же prompt+options) схлопываются в один content_hash и второе
+// молча теряется на unique(exam_profile_id, content_hash). format — тоже
+// часть хэша: без него single_choice и multi_choice с одинаковым
+// prompt+options коллизировали бы между собой (inputKind text_input НЕ
+// добавлен намеренно — text_input-таски с одним prompt считаются одним и тем
+// же контентом независимо от inputKind, это уже закреплено тестом).
 export function contentHash(body: TaskBody): string {
-  const parts: string[] = [normalizePrompt(body.prompt)];
+  const parts: string[] = [body.format, normalizePrompt(body.prompt), normalizePrompt(body.passage ?? "")];
   if (body.format !== "text_input") {
     const optionTexts = body.options.map((o) => o.text).sort();
     parts.push(...optionTexts);

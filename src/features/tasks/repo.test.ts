@@ -76,4 +76,58 @@ describe("contentHash", () => {
     const b = contentHash(singleChoiceBody("Prompt two"));
     expect(a).not.toBe(b);
   });
+
+  // D-important2: passage-bearing (audio/reading) tasks with a generic shared
+  // stem + option set must NOT collide just because the passage differs —
+  // otherwise the second distinct listening/reading item is silently deduped
+  // away by the (exam_profile_id, content_hash) unique index.
+  it("changes when passage differs for an otherwise identical single_choice body", () => {
+    const a = contentHash({
+      format: "single_choice",
+      prompt: "Определите основную мысль диалога.",
+      passage: "Диалог первый: A говорит X, B отвечает Y.",
+      options: [
+        { id: "a", text: "Да" },
+        { id: "b", text: "Нет" },
+      ],
+    });
+    const b = contentHash({
+      format: "single_choice",
+      prompt: "Определите основную мысль диалога.",
+      passage: "Диалог второй: совершенно другое содержание.",
+      options: [
+        { id: "a", text: "Да" },
+        { id: "b", text: "Нет" },
+      ],
+    });
+    expect(a).not.toBe(b);
+  });
+
+  it("is stable when passage is absent vs. null vs. undefined (all treated as no-passage)", () => {
+    const withoutField = contentHash(singleChoiceBody("Hello"));
+    const withNull = contentHash({ ...singleChoiceBody("Hello"), passage: null });
+    expect(withoutField).toBe(withNull);
+  });
+
+  // Bonus (same root cause: format was not part of the hash) — a single_choice
+  // and multi_choice body with identical prompt/options previously collided.
+  it("changes when format differs (single_choice vs multi_choice) with identical prompt/options", () => {
+    const single: TaskBody = {
+      format: "single_choice",
+      prompt: "Same prompt",
+      options: [
+        { id: "a", text: "A" },
+        { id: "b", text: "B" },
+      ],
+    };
+    const multi: TaskBody = {
+      format: "multi_choice",
+      prompt: "Same prompt",
+      options: [
+        { id: "a", text: "A" },
+        { id: "b", text: "B" },
+      ],
+    };
+    expect(contentHash(single)).not.toBe(contentHash(multi));
+  });
 });
