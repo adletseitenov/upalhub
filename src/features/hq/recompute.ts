@@ -11,6 +11,8 @@ import { computeKnowledgeStates } from "@/features/knowledge/compute";
 import type { KnowledgeRepo } from "@/features/knowledge/repo";
 import { buildStudyPlan } from "@/features/plan/build";
 import type { PlanRepo } from "@/features/plan/repo";
+import { computeForecast } from "@/features/forecast/compute";
+import type { ForecastRepo } from "@/features/forecast/repo";
 
 export type HqContext = { spec: ExamProfileSpec | null; config: HqConfig | null; examDate: Date | null };
 
@@ -72,9 +74,7 @@ export type RecomputeDeps = {
   hqReader: HqReader;
   knowledgeRepo: KnowledgeRepo;
   planRepo: PlanRepo;
-  // TODO(Stage3 Task5): forecastRepo — append прогноза с дедупом
-  // (computeForecast, D4) — тоже между upsertStates и touchWatermark;
-  // использует states + inputs.nFinished + context.spec.scoring.
+  forecastRepo: ForecastRepo;
 };
 
 /**
@@ -90,10 +90,16 @@ export type RecomputeDeps = {
  * существует, или профиль отсутствует/битый) — короткий путь: только
  * touchWatermark, знаниевые шаги вообще не запускаются.
  *
+ * Прогноз (T5, D4): computeForecast сам гейтит null (states.size===0 —
+ * "прогноз из чистого приора" запрещён; nFinished===0; все секции выпали) —
+ * append вызывается ТОЛЬКО для non-null результата; дедуп по
+ * (point,low,high) — внутри ForecastRepo.append.
+ *
  * НЕТ try/catch: исключение из любого шага (loadKnowledgeInputs/
- * upsertStates/buildStudyPlan-записи/будущего T5) пробрасывается КАК ЕСТЬ и
- * watermark в этом случае не трогается — вызывающая сторона решает
- * (submit-хук глотает и логирует, recompute-роут отвечает 500).
+ * upsertStates/buildStudyPlan-записи/loadMockResults/forecastRepo.append)
+ * пробрасывается КАК ЕСТЬ и watermark в этом случае не трогается —
+ * вызывающая сторона решает (submit-хук глотает и логирует, recompute-роут
+ * отвечает 500).
  */
 export async function recomputeHqInsights(
   deps: RecomputeDeps,
@@ -124,7 +130,20 @@ export async function recomputeHqInsights(
     await deps.planRepo.replaceFutureWeeks(hqId, plan.weeks);
   }
 
-  // TODO(Task5): computeForecast(...) + append с дедупом по (point,low,high).
+  // D4/Task5: прогноз строится из ТЕХ ЖЕ states/activeSections/scoring, что
+  // и карта/план выше — единый снимок пересчёта; nFinished переиспользует
+  // inputs (уже загружены для карты, отдельного запроса не требуется).
+  const mocks = await deps.knowledgeRepo.loadMockResults(hqId);
+  const forecast = computeForecast({
+    states,
+    activeSections,
+    scoring: context.spec.scoring,
+    nFinished: inputs.nFinished,
+    mocks,
+  });
+  if (forecast) {
+    await deps.forecastRepo.append(hqId, forecast);
+  }
 
   await deps.knowledgeRepo.touchWatermark(hqId, now);
 }

@@ -6,6 +6,7 @@ import type { HqConfig } from "@/features/exam-profile/selection";
 import type { KnowledgeItem } from "@/features/knowledge/compute";
 import type { KnowledgeRepo } from "@/features/knowledge/repo";
 import type { PlanRepo } from "@/features/plan/repo";
+import type { ForecastRepo } from "@/features/forecast/repo";
 import { recomputeHqInsights, supabaseHqReader } from "./recompute";
 import type { HqContext, HqReader } from "./recompute";
 
@@ -38,6 +39,7 @@ function fakeKnowledgeRepo(overrides: Partial<KnowledgeRepo> = {}): KnowledgeRep
     loadKnowledgeInputs: vi.fn().mockResolvedValue({ items: [], nFinished: 0, maxFinishedAt: null }),
     upsertStates: vi.fn().mockResolvedValue(undefined),
     touchWatermark: vi.fn().mockResolvedValue(undefined),
+    loadMockResults: vi.fn().mockResolvedValue([]),
     ...overrides,
   };
 }
@@ -46,6 +48,14 @@ function fakePlanRepo(overrides: Partial<PlanRepo> = {}): PlanRepo {
   return {
     replaceFutureWeeks: vi.fn().mockResolvedValue(undefined),
     loadWeeks: vi.fn().mockResolvedValue([]),
+    ...overrides,
+  };
+}
+
+function fakeForecastRepo(overrides: Partial<ForecastRepo> = {}): ForecastRepo {
+  return {
+    latest: vi.fn().mockResolvedValue(null),
+    append: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -66,8 +76,9 @@ describe("recomputeHqInsights: happy path", () => {
       loadKnowledgeInputs: vi.fn().mockResolvedValue({ items, nFinished: 1, maxFinishedAt: NOW }),
     });
     const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
 
-    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo }, { hqId: HQ_ID, now: NOW });
+    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW });
 
     expect(knowledgeRepo.upsertStates).toHaveBeenCalledTimes(1);
     const [hqId, states] = vi.mocked(knowledgeRepo.upsertStates).mock.calls[0];
@@ -93,8 +104,9 @@ describe("recomputeHqInsights: happy path", () => {
       loadKnowledgeInputs: vi.fn().mockResolvedValue({ items, nFinished: 1, maxFinishedAt: NOW }),
     });
     const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
 
-    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo }, { hqId: HQ_ID, now: NOW });
+    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW });
 
     const [, states] = vi.mocked(knowledgeRepo.upsertStates).mock.calls[0];
     expect(states.has("Общий раздел")).toBe(true);
@@ -122,8 +134,9 @@ describe("recomputeHqInsights: happy path", () => {
       loadKnowledgeInputs: vi.fn().mockResolvedValue({ items, nFinished: 1, maxFinishedAt: NOW }),
     });
     const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
 
-    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo }, { hqId: HQ_ID, now: NOW });
+    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW });
 
     const [, states] = vi.mocked(knowledgeRepo.upsertStates).mock.calls[0];
     expect(states.has("alpha")).toBe(true);
@@ -139,8 +152,9 @@ describe("recomputeHqInsights: 0 rows below NMIN", () => {
       loadKnowledgeInputs: vi.fn().mockResolvedValue({ items, nFinished: 1, maxFinishedAt: NOW }),
     });
     const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
 
-    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo }, { hqId: HQ_ID, now: NOW });
+    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW });
 
     const [, states] = vi.mocked(knowledgeRepo.upsertStates).mock.calls[0];
     expect(states.size).toBe(0);
@@ -151,8 +165,9 @@ describe("recomputeHqInsights: 0 rows below NMIN", () => {
     const hqReader = fakeHqReader({ spec: makeSpec(), config: null });
     const knowledgeRepo = fakeKnowledgeRepo();
     const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
 
-    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo }, { hqId: HQ_ID, now: NOW });
+    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW });
 
     const [, states] = vi.mocked(knowledgeRepo.upsertStates).mock.calls[0];
     expect(states.size).toBe(0);
@@ -165,8 +180,9 @@ describe("recomputeHqInsights: spec null", () => {
     const hqReader = fakeHqReader({ spec: null, config: null });
     const knowledgeRepo = fakeKnowledgeRepo();
     const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
 
-    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo }, { hqId: HQ_ID, now: NOW });
+    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW });
 
     expect(knowledgeRepo.loadKnowledgeInputs).not.toHaveBeenCalled();
     expect(knowledgeRepo.upsertStates).not.toHaveBeenCalled();
@@ -183,9 +199,10 @@ describe("recomputeHqInsights: failure semantics", () => {
       upsertStates: vi.fn().mockRejectedValue(new Error("db down")),
     });
     const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
 
     await expect(
-      recomputeHqInsights({ hqReader, knowledgeRepo, planRepo }, { hqId: HQ_ID, now: NOW }),
+      recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW }),
     ).rejects.toThrow("db down");
     expect(knowledgeRepo.touchWatermark).not.toHaveBeenCalled();
     expect(planRepo.replaceFutureWeeks).not.toHaveBeenCalled();
@@ -197,9 +214,10 @@ describe("recomputeHqInsights: failure semantics", () => {
       loadKnowledgeInputs: vi.fn().mockRejectedValue(new Error("network error")),
     });
     const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
 
     await expect(
-      recomputeHqInsights({ hqReader, knowledgeRepo, planRepo }, { hqId: HQ_ID, now: NOW }),
+      recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW }),
     ).rejects.toThrow("network error");
     expect(knowledgeRepo.upsertStates).not.toHaveBeenCalled();
     expect(knowledgeRepo.touchWatermark).not.toHaveBeenCalled();
@@ -210,9 +228,10 @@ describe("recomputeHqInsights: failure semantics", () => {
     const hqReader: HqReader = { loadHqContext: vi.fn().mockRejectedValue(new Error("hq lookup failed")) };
     const knowledgeRepo = fakeKnowledgeRepo();
     const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
 
     await expect(
-      recomputeHqInsights({ hqReader, knowledgeRepo, planRepo }, { hqId: HQ_ID, now: NOW }),
+      recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW }),
     ).rejects.toThrow("hq lookup failed");
     expect(knowledgeRepo.touchWatermark).not.toHaveBeenCalled();
   });
@@ -223,9 +242,10 @@ describe("recomputeHqInsights: failure semantics", () => {
     const planRepo = fakePlanRepo({
       replaceFutureWeeks: vi.fn().mockRejectedValue(new Error("plan write failed")),
     });
+    const forecastRepo = fakeForecastRepo();
 
     await expect(
-      recomputeHqInsights({ hqReader, knowledgeRepo, planRepo }, { hqId: HQ_ID, now: NOW }),
+      recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW }),
     ).rejects.toThrow("plan write failed");
     expect(knowledgeRepo.touchWatermark).not.toHaveBeenCalled();
   });
@@ -243,9 +263,10 @@ describe("recomputeHqInsights: idempotency", () => {
       loadKnowledgeInputs: vi.fn().mockResolvedValue({ items, nFinished: 1, maxFinishedAt: NOW }),
     });
     const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
 
-    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo }, { hqId: HQ_ID, now: NOW });
-    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo }, { hqId: HQ_ID, now: NOW });
+    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW });
+    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW });
 
     const calls = vi.mocked(knowledgeRepo.upsertStates).mock.calls;
     expect(calls).toHaveLength(2);
@@ -274,8 +295,9 @@ describe("recomputeHqInsights: plan step (Task4 buildStudyPlan wiring)", () => {
       loadKnowledgeInputs: vi.fn().mockResolvedValue({ items, nFinished: 1, maxFinishedAt: NOW }),
     });
     const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
 
-    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo }, { hqId: HQ_ID, now: NOW });
+    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW });
 
     expect(planRepo.replaceFutureWeeks).toHaveBeenCalledTimes(1);
     const [hqId, weeks] = vi.mocked(planRepo.replaceFutureWeeks).mock.calls[0];
@@ -288,8 +310,9 @@ describe("recomputeHqInsights: plan step (Task4 buildStudyPlan wiring)", () => {
     const hqReader = fakeHqReader({ spec: makeSpec(), config: null, examDate: null });
     const knowledgeRepo = fakeKnowledgeRepo();
     const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
 
-    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo }, { hqId: HQ_ID, now: NOW });
+    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW });
 
     expect(planRepo.replaceFutureWeeks).toHaveBeenCalledTimes(1);
     const [, weeks] = vi.mocked(planRepo.replaceFutureWeeks).mock.calls[0];
@@ -301,8 +324,9 @@ describe("recomputeHqInsights: plan step (Task4 buildStudyPlan wiring)", () => {
     const hqReader = fakeHqReader({ spec: makeSpec(), config: null, examDate: pastExamDate });
     const knowledgeRepo = fakeKnowledgeRepo();
     const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
 
-    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo }, { hqId: HQ_ID, now: NOW });
+    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW });
 
     expect(planRepo.replaceFutureWeeks).not.toHaveBeenCalled();
     // Watermark still fires — examDatePassed only skips the plan write, not
@@ -314,12 +338,154 @@ describe("recomputeHqInsights: plan step (Task4 buildStudyPlan wiring)", () => {
     const hqReader = fakeHqReader({ spec: makeSpec(), config: null, examDate: null });
     const knowledgeRepo = fakeKnowledgeRepo();
     const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
 
-    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo }, { hqId: HQ_ID, now: NOW });
+    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW });
 
     const planOrder = vi.mocked(planRepo.replaceFutureWeeks).mock.invocationCallOrder[0];
     const touchOrder = vi.mocked(knowledgeRepo.touchWatermark).mock.invocationCallOrder[0];
     expect(planOrder).toBeLessThan(touchOrder);
+  });
+});
+
+// D4/Task5: встройка computeForecast + ForecastRepo.append в оркестратор —
+// прогноз строится из ТЕХ ЖЕ states/activeSections/scoring, что и карта/план
+// выше, плюс loadMockResults(hqId) и inputs.nFinished (переиспользован из
+// шага карты — отдельного запроса нет).
+describe("recomputeHqInsights: forecast step (Task5 computeForecast wiring)", () => {
+  it("appends a forecast via forecastRepo when computeForecast returns non-null (map has >= NMIN rows, >=1 finished attempt)", async () => {
+    const items: KnowledgeItem[] = [
+      answeredItem({ topic: "algebra" }),
+      answeredItem({ topic: "algebra" }),
+      answeredItem({ topic: "algebra" }),
+    ];
+    const hqReader = fakeHqReader({ spec: makeSpec(), config: null });
+    const knowledgeRepo = fakeKnowledgeRepo({
+      loadKnowledgeInputs: vi.fn().mockResolvedValue({ items, nFinished: 1, maxFinishedAt: NOW }),
+    });
+    const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
+
+    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW });
+
+    expect(forecastRepo.append).toHaveBeenCalledTimes(1);
+    const [hqId, forecast] = vi.mocked(forecastRepo.append).mock.calls[0];
+    expect(hqId).toBe(HQ_ID);
+    expect(Number.isFinite(forecast.point)).toBe(true);
+  });
+
+  it("does NOT append a forecast when the map is empty (all topics below NMIN -> computeForecast returns null)", async () => {
+    const items: KnowledgeItem[] = [answeredItem({ topic: "algebra" })]; // 1 < NMIN(3)
+    const hqReader = fakeHqReader({ spec: makeSpec(), config: null });
+    const knowledgeRepo = fakeKnowledgeRepo({
+      loadKnowledgeInputs: vi.fn().mockResolvedValue({ items, nFinished: 1, maxFinishedAt: NOW }),
+    });
+    const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
+
+    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW });
+
+    expect(forecastRepo.append).not.toHaveBeenCalled();
+  });
+
+  it("does NOT append a forecast when there are no finished attempts at all (nFinished === 0)", async () => {
+    const hqReader = fakeHqReader({ spec: makeSpec(), config: null });
+    const knowledgeRepo = fakeKnowledgeRepo();
+    const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
+
+    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW });
+
+    expect(forecastRepo.append).not.toHaveBeenCalled();
+  });
+
+  it("passes loadMockResults(hqId) output through to computeForecast's mock calibration", async () => {
+    const items: KnowledgeItem[] = [
+      answeredItem({ topic: "algebra" }),
+      answeredItem({ topic: "algebra" }),
+      answeredItem({ topic: "algebra" }),
+    ];
+    const hqReader = fakeHqReader({ spec: makeSpec(), config: null });
+    const knowledgeRepo = fakeKnowledgeRepo({
+      loadKnowledgeInputs: vi.fn().mockResolvedValue({ items, nFinished: 1, maxFinishedAt: NOW }),
+      loadMockResults: vi.fn().mockResolvedValue([{ scaled: 100, snapshot: { scaleMin: 0, scaleMax: 140, unit: "баллов" } }]),
+    });
+    const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
+
+    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW });
+
+    expect(knowledgeRepo.loadMockResults).toHaveBeenCalledWith(HQ_ID);
+    expect(forecastRepo.append).toHaveBeenCalledTimes(1);
+  });
+
+  it("forecast append happens AFTER the plan write and BEFORE the watermark touch (order matches D7's step list)", async () => {
+    const items: KnowledgeItem[] = [
+      answeredItem({ topic: "algebra" }),
+      answeredItem({ topic: "algebra" }),
+      answeredItem({ topic: "algebra" }),
+    ];
+    const hqReader = fakeHqReader({ spec: makeSpec(), config: null });
+    const knowledgeRepo = fakeKnowledgeRepo({
+      loadKnowledgeInputs: vi.fn().mockResolvedValue({ items, nFinished: 1, maxFinishedAt: NOW }),
+    });
+    const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
+
+    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW });
+
+    const planOrder = vi.mocked(planRepo.replaceFutureWeeks).mock.invocationCallOrder[0];
+    const appendOrder = vi.mocked(forecastRepo.append).mock.invocationCallOrder[0];
+    const touchOrder = vi.mocked(knowledgeRepo.touchWatermark).mock.invocationCallOrder[0];
+    expect(planOrder).toBeLessThan(appendOrder);
+    expect(appendOrder).toBeLessThan(touchOrder);
+  });
+
+  it("propagates an error thrown from forecastRepo.append and does NOT touch the watermark", async () => {
+    const items: KnowledgeItem[] = [
+      answeredItem({ topic: "algebra" }),
+      answeredItem({ topic: "algebra" }),
+      answeredItem({ topic: "algebra" }),
+    ];
+    const hqReader = fakeHqReader({ spec: makeSpec(), config: null });
+    const knowledgeRepo = fakeKnowledgeRepo({
+      loadKnowledgeInputs: vi.fn().mockResolvedValue({ items, nFinished: 1, maxFinishedAt: NOW }),
+    });
+    const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo({
+      append: vi.fn().mockRejectedValue(new Error("forecast write failed")),
+    });
+
+    await expect(
+      recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW }),
+    ).rejects.toThrow("forecast write failed");
+    expect(knowledgeRepo.touchWatermark).not.toHaveBeenCalled();
+  });
+
+  it("propagates an error thrown from loadMockResults and does NOT touch the watermark", async () => {
+    const hqReader = fakeHqReader({ spec: makeSpec(), config: null });
+    const knowledgeRepo = fakeKnowledgeRepo({
+      loadMockResults: vi.fn().mockRejectedValue(new Error("mock query failed")),
+    });
+    const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
+
+    await expect(
+      recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW }),
+    ).rejects.toThrow("mock query failed");
+    expect(knowledgeRepo.touchWatermark).not.toHaveBeenCalled();
+  });
+
+  it("spec===null short-circuit never touches loadMockResults or forecastRepo.append", async () => {
+    const hqReader = fakeHqReader({ spec: null, config: null });
+    const knowledgeRepo = fakeKnowledgeRepo();
+    const planRepo = fakePlanRepo();
+    const forecastRepo = fakeForecastRepo();
+
+    await recomputeHqInsights({ hqReader, knowledgeRepo, planRepo, forecastRepo }, { hqId: HQ_ID, now: NOW });
+
+    expect(knowledgeRepo.loadMockResults).not.toHaveBeenCalled();
+    expect(forecastRepo.append).not.toHaveBeenCalled();
   });
 });
 

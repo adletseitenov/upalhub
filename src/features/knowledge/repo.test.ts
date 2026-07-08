@@ -200,3 +200,122 @@ describe("supabaseKnowledgeRepo.touchWatermark", () => {
     });
   });
 });
+
+describe("supabaseKnowledgeRepo.loadMockResults", () => {
+  function mockTestSpec(overrides: Record<string, unknown> = {}) {
+    return {
+      version: 1,
+      kind: "mock",
+      language: "kk",
+      sections: [],
+      taskIds: [],
+      scoringSnapshot: { scaleMin: 0, scaleMax: 9, unit: "band" },
+      ...overrides,
+    };
+  }
+
+  it("returns [] (no queries past tests) when the hq has no mock tests", async () => {
+    const { client, from } = fakeSupabase({ tests: { data: [], error: null } });
+
+    const result = await supabaseKnowledgeRepo(client).loadMockResults("hq-1");
+
+    expect(result).toEqual([]);
+    expect(from).toHaveBeenCalledTimes(1);
+    expect(from).toHaveBeenCalledWith("tests");
+  });
+
+  it("filters tests by kind='mock' and hq_id", async () => {
+    const { client, builders } = fakeSupabase({ tests: { data: [], error: null } });
+
+    await supabaseKnowledgeRepo(client).loadMockResults("hq-1");
+
+    const eqCalls = builders.tests.calls.filter((c) => c.method === "eq");
+    expect(eqCalls).toContainEqual({ method: "eq", args: ["hq_id", "hq-1"] });
+    expect(eqCalls).toContainEqual({ method: "eq", args: ["kind", "mock"] });
+  });
+
+  it("returns [] when mock tests exist but have no finished attempts with a scaled_score", async () => {
+    const { client, from } = fakeSupabase({
+      tests: { data: [{ id: "test-1", spec: mockTestSpec() }], error: null },
+      attempts: { data: [], error: null },
+    });
+
+    const result = await supabaseKnowledgeRepo(client).loadMockResults("hq-1");
+
+    expect(result).toEqual([]);
+    expect(from).toHaveBeenCalledTimes(2);
+  });
+
+  it("joins attempts to mock tests, pairing scaled_score with that test's frozen scoringSnapshot", async () => {
+    const snapshot1 = { scaleMin: 0, scaleMax: 9, unit: "band" };
+    const snapshot2 = { scaleMin: 0, scaleMax: 140, unit: "баллов" };
+    const { client } = fakeSupabase({
+      tests: {
+        data: [
+          { id: "test-1", spec: mockTestSpec({ scoringSnapshot: snapshot1 }) },
+          { id: "test-2", spec: mockTestSpec({ scoringSnapshot: snapshot2 }) },
+        ],
+        error: null,
+      },
+      attempts: {
+        data: [
+          { test_id: "test-1", scaled_score: 7 },
+          { test_id: "test-2", scaled_score: 110 },
+        ],
+        error: null,
+      },
+    });
+
+    const result = await supabaseKnowledgeRepo(client).loadMockResults("hq-1");
+
+    expect(result).toEqual([
+      { scaled: 7, snapshot: snapshot1 },
+      { scaled: 110, snapshot: snapshot2 },
+    ]);
+  });
+
+  it("skips a mock test row whose spec fails testSpecSchema (malformed/legacy) without throwing", async () => {
+    const goodSnapshot = { scaleMin: 0, scaleMax: 9, unit: "band" };
+    const { client } = fakeSupabase({
+      tests: {
+        data: [
+          { id: "test-broken", spec: { garbage: true } },
+          { id: "test-good", spec: mockTestSpec({ scoringSnapshot: goodSnapshot }) },
+        ],
+        error: null,
+      },
+      attempts: {
+        data: [
+          { test_id: "test-broken", scaled_score: 5 },
+          { test_id: "test-good", scaled_score: 6.5 },
+        ],
+        error: null,
+      },
+    });
+
+    const result = await supabaseKnowledgeRepo(client).loadMockResults("hq-1");
+
+    expect(result).toEqual([{ scaled: 6.5, snapshot: goodSnapshot }]);
+  });
+
+  it("filters out unfinished/scoreless attempts at the query level (not.is.null on finished_at and scaled_score)", async () => {
+    const { client, builders } = fakeSupabase({
+      tests: { data: [{ id: "test-1", spec: mockTestSpec() }], error: null },
+      attempts: { data: [], error: null },
+    });
+
+    await supabaseKnowledgeRepo(client).loadMockResults("hq-1");
+
+    const notCalls = builders.attempts.calls.filter((c) => c.method === "not");
+    expect(notCalls).toContainEqual({ method: "not", args: ["finished_at", "is", null] });
+    expect(notCalls).toContainEqual({ method: "not", args: ["scaled_score", "is", null] });
+  });
+
+  it("throws (does not swallow) a genuine query error at any step", async () => {
+    const { client } = fakeSupabase({ tests: { data: null, error: { message: "boom" } } });
+
+    await expect(supabaseKnowledgeRepo(client).loadMockResults("hq-1")).rejects.toEqual({
+      message: "boom",
+    });
+  });
+});

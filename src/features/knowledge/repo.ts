@@ -5,6 +5,8 @@
 // здесь — только чтение/запись + защита от битых строк.
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
+import { testSpecSchema } from "@/features/tests/spec";
+import type { ScoringSnapshot } from "@/features/tests/scoring";
 import type { KnowledgeItem, TopicState } from "./compute";
 
 export type KnowledgeInputs = {
@@ -32,6 +34,20 @@ export interface KnowledgeRepo {
   upsertStates(hqId: string, states: Map<string, TopicState>): Promise<void>;
   /** study_hqs.last_recomputed_at — единственный watermark пересчёта. */
   touchWatermark(hqId: string, now: Date): Promise<void>;
+  /**
+   * D4/Task5: завершённые mock-попытки этого hq (tests.kind='mock',
+   * attempts.finished_at не null, attempts.scaled_score не null) вместе со
+   * ЗАМОРОЖЕННЫМ scoringSnapshot той сборки (tests.spec.scoringSnapshot) —
+   * прогноз нормирует mock-балл по шкале, которая была ДЕЙСТВУЮЩЕЙ на момент
+   * сборки конкретного mock-теста (не текущему exam-profile.spec.scoring,
+   * который мог с тех пор измениться). Битые/legacy spec-строки (не
+   * проходят testSpecSchema) скипаются молча — одна испорченная строка не
+   * должна ронять весь прогноз. Намеренно НЕ дедуплицируется по test_id:
+   * несколько попыток одного и того же mock-теста дают несколько записей
+   * (каждая пересдача — свежий сигнал калибровки, влияет на nMock/alpha в
+   * computeForecast) — это осознанный выбор v0, не пропущенный дедуп.
+   */
+  loadMockResults(hqId: string): Promise<{ scaled: number; snapshot: ScoringSnapshot }[]>;
 }
 
 export function supabaseKnowledgeRepo(client: SupabaseClient<Database>): KnowledgeRepo {
@@ -130,6 +146,46 @@ export function supabaseKnowledgeRepo(client: SupabaseClient<Database>): Knowled
       };
       const { error } = await client.from("study_hqs").update(patch).eq("id", hqId);
       if (error) throw error;
+    },
+
+    async loadMockResults(hqId) {
+      const { data: testRows, error: testsError } = await client
+        .from("tests")
+        .select("id, spec")
+        .eq("hq_id", hqId)
+        .eq("kind", "mock");
+      if (testsError) throw testsError;
+      const tests = testRows ?? [];
+      if (tests.length === 0) return [];
+
+      const snapshotByTestId = new Map<string, ScoringSnapshot>();
+      for (const row of tests) {
+        const parsed = testSpecSchema.safeParse(row.spec);
+        if (!parsed.success) {
+          console.warn(`knowledge/loadMockResults: skipping malformed tests.spec row id=${row.id}`);
+          continue;
+        }
+        snapshotByTestId.set(row.id, parsed.data.scoringSnapshot);
+      }
+      const testIds = Array.from(snapshotByTestId.keys());
+      if (testIds.length === 0) return [];
+
+      const { data: attemptRows, error: attemptsError } = await client
+        .from("attempts")
+        .select("test_id, scaled_score")
+        .in("test_id", testIds)
+        .not("finished_at", "is", null)
+        .not("scaled_score", "is", null);
+      if (attemptsError) throw attemptsError;
+
+      const results: { scaled: number; snapshot: ScoringSnapshot }[] = [];
+      for (const row of attemptRows ?? []) {
+        if (row.scaled_score === null) continue; // defensive: .not() should already exclude nulls
+        const snapshot = snapshotByTestId.get(row.test_id);
+        if (!snapshot) continue; // defensive: id came from snapshotByTestId's own keys above
+        results.push({ scaled: row.scaled_score, snapshot });
+      }
+      return results;
     },
   };
 }

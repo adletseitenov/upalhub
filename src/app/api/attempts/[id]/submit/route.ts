@@ -10,6 +10,7 @@ import type { Database } from "@/lib/supabase/database.types";
 import { recomputeHqInsights, supabaseHqReader } from "@/features/hq/recompute";
 import { supabaseKnowledgeRepo } from "@/features/knowledge/repo";
 import { supabasePlanRepo } from "@/features/plan/repo";
+import { supabaseForecastRepo } from "@/features/forecast/repo";
 
 type TaskRow = Database["public"]["Tables"]["tasks"]["Row"];
 
@@ -101,6 +102,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
         hqReader: supabaseHqReader(supabase),
         knowledgeRepo: supabaseKnowledgeRepo(supabase),
         planRepo: supabasePlanRepo(supabase),
+        forecastRepo: supabaseForecastRepo(supabase),
       },
       { hqId: test.hqId, now },
     );

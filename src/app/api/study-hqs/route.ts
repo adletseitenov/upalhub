@@ -7,6 +7,7 @@ import { hqConfigSchema, validateHqConfig, type HqConfig } from "@/features/exam
 import { recomputeHqInsights, supabaseHqReader } from "@/features/hq/recompute";
 import { supabaseKnowledgeRepo } from "@/features/knowledge/repo";
 import { supabasePlanRepo } from "@/features/plan/repo";
+import { supabaseForecastRepo } from "@/features/forecast/repo";
 
 // D7 🔴: смена config/exam_date (и будущего target, T8) регенит план/прогноз
 // — оркестратор многошаговый (карта+план), тот же maxDuration=60, что и у
@@ -113,6 +114,7 @@ export async function POST(request: Request) {
             hqReader: supabaseHqReader(supabase),
             knowledgeRepo: supabaseKnowledgeRepo(supabase),
             planRepo: supabasePlanRepo(supabase),
+            forecastRepo: supabaseForecastRepo(supabase),
           },
           { hqId: existing.id, now: new Date() },
         );

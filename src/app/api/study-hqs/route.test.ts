@@ -17,6 +17,9 @@ vi.mock("@/features/knowledge/repo", () => ({
 vi.mock("@/features/plan/repo", () => ({
   supabasePlanRepo: vi.fn(() => ({ __tag: "plan-repo" })),
 }));
+vi.mock("@/features/forecast/repo", () => ({
+  supabaseForecastRepo: vi.fn(() => ({ __tag: "forecast-repo" })),
+}));
 
 import { supabaseServer } from "@/lib/supabase/server";
 import { recomputeHqInsights } from "@/features/hq/recompute";
