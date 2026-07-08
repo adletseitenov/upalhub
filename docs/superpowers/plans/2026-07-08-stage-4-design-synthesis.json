@@ -1,0 +1,315 @@
+{
+  "summary": "Спроектировать этап 4 U-Pal: открытая библиотека — каталог профилей, звёзды/клоны, рейтинг, модерация, trust-promotion",
+  "agentCount": 6,
+  "logs": [],
+  "result": {
+    "judged": {
+      "finalDecisions": {
+        "D1_catalog": "ВЫБОР: публичный роут src/app/(marketing)/exams/page.tsx (server component, анонимное чтение через RLS 'exam profiles public read', 0 LLM). Данные — новый listExamProfiles в repo + чистая сборка запроса в src/features/exam-profile/catalog.ts: фильтры language (существующая колонка), country (НОВАЯ генерируемая колонка `country text generated always as (spec->>'country') stored` — фильтруется через PostgREST .eq(), попадает в database.types.ts; выбрана вместо expression-индекса лензы «простота», т.к. PostgREST не умеет фильтровать по произвольному выражению), trust (колонка); поиск — ilike по title; сортировки popular (learner_count desc, created_at desc — дефолт) | new (created_at desc); пагинация OFFSET .range() по 20 (2 из 3 линз против keyset — YAGNI на сотнях строк; keyset — деферрал). Скрытие: WHERE listed=true AND slug !~ '-x[0-9a-f]{6}$' (паттерн из ensureRerollSlug, slug.ts:27-31 — проверено). «ВОЗМОЖНО ВЫ ИМЕЛИ В ВИДУ» без LLM (консенсус всех линз): pg_trgm + GIN(title gin_trgm_ops); primary ilike, при 0 результатов — similarity(title,q)>0.3 top-5 listed-профилей; это же — мягкая мера против semantic-дублей. SEO (линза роста, принято целиком): /exams — ISR revalidate=300, индексируется только нефильтрованный вид (?q/фильтры/страницы — noindex + canonical на /exams); /exams/[slug] — ISR revalidate=3600 + generateStaticParams для прогретых витринных экзаменов + dynamicParams=true (on-demand, без cron); generateMetadata (title из spec.examName, description, canonical, OG) + JSON-LD Course; app/sitemap.ts (только listed без -x) + app/robots.ts. Cookie-локаль без URL-префикса — зафиксированный SEO-долг (корректный <html lang>, URL-локали post-MVP). ИСТОЧНИК: рост (SEO-обвязка, generated column, ISR) + простота (offset, ilike-primary) + целостность (listed-фильтр в одной точке data-layer). КОНФЛИКТЫ: keyset vs offset → offset (2:1, YAGNI); view exam_profiles_catalog (простота) отвергнут — фильтр живёт в catalog.ts, view не нужен без count-on-read звёзд (см. D2).",
+        "D2_stars": "ВЫБОР: в этапе 4 НЕ появляется ни одного нового star-примитива. exam_profile_stars НЕ создаём (2 из 3 линз против: профиль — канонический общий актив, не контент на голосование; анонимному SEO-посетителю звезда недоступна). Соц. доказательство профиля = СЧЁТЧИК УЧЕНИКОВ «N готовятся»: новая колонка exam_profiles.learner_count int not null default 0, поддерживается SECURITY DEFINER триггером на study_hqs AFTER INSERT/DELETE (+backfill в миграции). Почему счётчик, а не count-на-чтении (возражение линзы простоты «триггер-счётчик = источник дыры stars_count»): study_hqs заперта RLS own-only (core_schema.sql:188-190, проверено) — аноним/каталог физически не посчитает её на чтении; а форж-дыра закрыта column-grant-волной: learner_count/listed автоматически НЕ входят в whitelist-гранты 20260707120000/20260709150000 (гранты перечисляют колонки — новые не писабельны клиентом), в отличие от hubs.stars_count, у которого грантов не было вовсе. hub_stars остаётся спящей; звёзды хабов уезжают вместе с хабами (D6). ПОПУТНОЕ ЗАКРЫТИЕ ЖИВОЙ ДЫРЫ (линза целостности, принято): hubs доступна прямым PostgREST даже без UI («own hubs write» for all) — в миграцию A входит grant-lock: revoke update on hubs from anon, authenticated; grant update (title, description, visibility) to authenticated → stars_count/origin_hub_id/owner_id/exam_profile_id больше не подделываемы; триггер поддержки stars_count — при пробуждении хабов (этап 5). ИСТОЧНИК: рост (learner_count как честный сигнал) + целостность (grant-lock hubs). КОНФЛИКТ: звёзды-на-профилях (простота) отвергнуты 2:1; отдельная таблица exam_profile_stats (рост) отвергнута — колонка на exam_profiles проще (нет новой таблицы, нет join в каталоге, EXPECTED_TABLES не меняется), а грант-whitelist её уже защищает.",
+        "D3_ranking": "ВЫБОР: событийные денормализованные счётчики, БЕЗ cron / materialized view / count-subquery (консенсус всех линз). popularity = learner_count (детерминированный сигнал адопции: сколько штабов создано по профилю), tie-break created_at desc. Сорты каталога: popular (дефолт) | new; индекс exam_profiles(learner_count desc, created_at desc). Счётчик ведёт SECURITY DEFINER триггер bump_learner_count() на study_hqs (см. D2). ОТВЕРГНУТО: trust-tier как первичный ключ сортировки (целостность) — на старте почти все профили ai_draft, тир вырождается; trust остаётся бейджем + фильтром; time-decay и взвешенные формулы (нужен пересчёт=cron); attempts_count в формуле (тяжелее join, и рейтинг-по-исходам сознательно post-MVP — product-plan §4: данные копим в attempt_items с первого дня, показываем позже); stars в формуле (профильных звёзд нет, хабы отрезаны). ИСТОЧНИК: рост (learner_count desc) + консенсус по cron-free. Расширение позже тем же триггерным путём (finished attempts и т.п.) — аддитивно.",
+        "D4_moderation": "ВЫБОР: один рычаг — колонка exam_profiles.listed boolean not null default true (позитивная семантика линзы простоты; авто-защищена whitelist-грантами — флипает только service-role/SQL). (1) Reroll-мусор -x<hash6>: ДЕТЕРМИНИРОВАННЫЙ query-time фильтр slug !~ '-x[0-9a-f]{6}$' в каталоге/sitemap/подсказках (линза роста; выбран вместо BEFORE INSERT триггера линзы целостности — без состояния, ретроактивно накрывает уже существующий прод-мусор, прямые URL и онбординг-ссылки живы) + noindex robots-meta на detail-странице таких слагов. (2) Авто-скрытие по репортам: SECURITY DEFINER AFTER INSERT триггер на exam_profile_reports — при count(*)>=2 по reported_profile_id → listed=false (unique(reported_profile_id,user_id) уже гарантирует разных репортеров); backfill в миграции для существующих профилей с >=2 репортами. Порог 2 — на ратификацию основателю. (3) Рендер !listed: создатель и админ видят полную страницу (путь RefineForm жив — создатель дорабатывает), остальные — нейтральную заглушку «профиль на проверке/снят с публикации» + noindex (НЕ жёсткий 404 — расшаренные ссылки не ломаются, деиндекс через noindex; отвергнут 404 линзы роста). (4) Модератор: env-allowlist ADMIN_EMAILS (comma-sep, .env.example) + серверный helper isAdmin(user) — без таблицы ролей (консенсус); действия через PATCH /api/admin/exam-profiles/[id] {action: hide|unhide|verify} на существующем supabaseAdmin() (src/lib/supabase/admin.ts) за isAdmin-гейтом (401/403/404); минимальная триаж-страница (app)/admin: профили + report-count (service-role агрегат, RLS reports не трогаем), кнопки hide/unhide/verify. ИСТОЧНИК: простота (listed boolean, заглушка для не-создателя) + рост (query-time -x-фильтр) + целостность (report-триггер, admin-контур). КОНФЛИКТ: 3-состоянийный enum listed/unlisted/hidden (целостность) отвергнут — boolean + slug-паттерн покрывают MVP-случаи.",
+        "D5_trust": "ВЫБОР: детерминированный guarded-вариант B (2 из 3 линз + лин брифа) как ПРЕДЛОЖЕНИЕ к ратификации основателем (trust-promotion.md ОЖИДАЕТ — мы не закрываем решение в одностороннем порядке): ai_draft→data_refined когда >=5 РАЗНЫХ юзеров завершили попытку по профилю (count(distinct a.user_id) from attempts a join tests t join study_hqs h where h.exam_profile_id=$1 and a.finished_at is not null — цепочка проверена по core_schema) И count(exam_profile_reports)=0 И listed. Реализация: SECURITY DEFINER функция maybe_promote_exam_profile_trust(p_profile_id uuid) — forward-only (только из 'ai_draft'), идемпотентна, считает сигналы на месте (таблица exam_profile_completions линзы целостности отвергнута — count-запрос на MVP-масштабе дешёв, EXPECTED_TABLES не пухнет); grant execute to authenticated безопасен — функция применяет правило независимо от вызывающего. ВЫЗОВ без cron: best-effort шаг в конце существующего POST /api/hq/[hqId]/recompute (уже бежит при завершении попытки) за env-флагом TRUST_AUTO_PROMOTE (default off) — включение флага = ратификация основателем порога N=5 (гейт в env, а не в SQL — DB-триггер не читает env; вариант «триггер на attempts» отвергнут). verified — ТОЛЬКО вручную админом через /api/admin (консенсус; схема уже гарантирует: trust не в клиентских грантах). Вариант A (refine создателем → data_refined, линза простоты) ОТВЕРГНУТ как авто-триггер 2:1 — гарантия одного человека слишком слаба; репорт «не тот экзамен» замораживает профиль на ai_draft. «Открыт пользователем X» (roadmap 4.5): profiles RLS own-read-only (проверено 20260705120000_profiles.sql:11-12) → SECURITY DEFINER функция exam_profile_creator_name(profile_id) returns text (только display_name, grant anon+authenticated), выводится на странице профиля и карточке каталога. docs/decisions/trust-promotion.md обновляется предложенным правилом со статусом «предложено, ждёт ратификации N/флага».",
+        "D6_clones": "ВЫБОР: хабы РЕЖЕМ из этапа 4 ЦЕЛИКОМ (мандат брифа: «хабы резать, если консенсуса нет» — консенсуса нет: простота режет целиком, рост делает отделяемым срезом, целостность оставляет минимум). Не отгружаем: страницу хаба, звёзды-UI, клонирование, редактор/CRUD author, публикацию (roadmap 4.2-4.4). Таблицы hubs/hub_stars/origin_hub_id/tasks.hub_id остаются спящими, схему не трогаем (аддитивность). ЧТО ОСТАЁТСЯ от хабов в этапе 4: только 3-строчный grant-lock (D2) — закрывает живую PostgREST-дыру накрутки stars_count до пробуждения; + memo (Octarin/decision) «при пробуждении хабов сначала триггер stars_count + полная grant-волна». ОБОСНОВАНИЕ (рост+простота): органическое ядро — каталог+SEO+trust+learner_count — закрывает выход этапа («пользователь находит экзамен в каталоге вместо создания заново»), критерий MVP №2 (витрина) и половину №4 («>=5 экзаменов открыты юзерами»); хаб-страницы — app-поверхность, не SEO-лендинг, 60%+ кода этапа при полностью спящей таблице в 2-недельном окне. ЯВНЫЙ ТРЕЙД-ОФФ ОСНОВАТЕЛЮ (не тихо): первая половина критерия №4 («внешний автор опубликовал хаб; ученик по клону») сдвигается в fast-follow ранний этап 5; авторский путь на бете = существующий JSON-импорт заданий в профиль (S2-Task 8, POST /api/exam-profiles/[id]/tasks/import) + refine профиля. Унаследованный деферрал «UI импорта + модерация банка → этап 4» уезжает вместе с authoring-инструментами в этап 5 (авторские инструменты живут с хабами).",
+        "D7_migrations": "ВЫБОР: ДВЕ аддитивные миграции по волновому column-grant-паттерну, timestamps после 20260709150000; НОВЫХ ТАБЛИЦ НЕТ (EXPECTED_TABLES в migrations.test.ts не меняется — только пины колонок/индексов/триггеров/поведения). МИГРАЦИЯ A 20260710120000_stage4_catalog_moderation.sql: create extension if not exists pg_trgm; alter exam_profiles add listed boolean not null default true, add learner_count int not null default 0, add country text generated always as (spec->>'country') stored (все три вне whitelist-грантов insert/update → клиент не пишет; generated в insert невозможна by design); индексы language/country/trust/(learner_count desc, created_at desc)/gin(title gin_trgm_ops); SECURITY DEFINER триггер bump_learner_count() на study_hqs AFTER INSERT/DELETE; SECURITY DEFINER триггер auto_unlist_on_report() на exam_profile_reports AFTER INSERT (>=2 → listed=false); SECURITY DEFINER функция exam_profile_creator_name(uuid) (grant execute anon, authenticated); backfill learner_count из study_hqs и unlist по >=2 репортам; grant-lock hubs (revoke update from anon, authenticated; grant update(title, description, visibility) to authenticated). МИГРАЦИЯ B 20260710120100_stage4_trust_promotion.sql: SECURITY DEFINER maybe_promote_exam_profile_trust(uuid) (forward-only ai_draft→data_refined при >=5 distinct finishers & 0 reports & listed; grant execute authenticated; порог — константа с комментарием, смена = follow-up миграция). СОВМЕСТИМОСТЬ: select * теперь отдаёт listed/learner_count/country — spec-safeParse не задет, точечные .eq(slug/id) не задеты; database.types.ts перегенерировать (иначе TS не соберётся); messages.test.ts — паритет новых ключей ru/kk. ГОТЧА ТЕСТОВ: migrations.test.ts строит голый new PGlite() — create extension pg_trgm упадёт, нужно extensions:{pg_trgm} из @electric-sql/pglite/contrib/pg_trgm при конструировании. ПОРЯДОК ДЕПЛОЯ: строго ПОСЛЕ ожидающих 20260709130000/140000/150000, которые ждут SUPABASE_SECRET_KEY в Vercel + одобрения Адлета (ops-блокер этапа); табличные select-гранты на exam_profiles табличного уровня → новые колонки читаемы автоматически."
+      },
+      "architectureSummary": "Этап 4 «Библиотека» = чтение: 0 LLM, 0 cron, 2 аддитивные миграции без новых таблиц. Ядро — публичный SEO-каталог /exams в (marketing) (анонимное чтение через существующую RLS public read): фильтры language/country(generated column)/trust, ilike-поиск с pg_trgm «возможно вы имели в виду», сортировка popular=learner_count|new, offset-пагинация; ISR + generateMetadata/JSON-LD + sitemap/robots превращают профили в органические лендинги. Социальное доказательство — не звёзды, а «N готовятся» (learner_count на exam_profiles, SECURITY DEFINER триггер на study_hqs; count-на-чтении невозможен из-за RLS own-only). Модерация — один рычаг listed (клиент-неписабелен через whitelist-гранты): reroll -x-слаги детерминированно исключаются query-time фильтром из каталога/sitemap (доступны по URL с noindex), >=2 репортов авто-скрывают профиль DB-триггером, admin = env-allowlist ADMIN_EMAILS + service-role /api/admin + минимальный триаж. Trust: детерминированный guarded-B (>=5 distinct завершивших, 0 репортов → data_refined) как SECURITY DEFINER rpc, вызываемый best-effort из существующего recompute за env-флагом TRUST_AUTO_PROMOTE default off (включение = ратификация основателем); verified — только вручную; «открыт пользователем X» — definer-функция, отдающая только display_name (profiles RLS own-only). Хабы/клоны/редактор режутся целиком в этап 5 (нет консенсуса линз; спящая таблица получает только 3-строчный grant-lock, закрывающий живую PostgREST-дыру накрутки stars_count). Все чувствительные записи идут по прецеденту column-grant-волн; новые колонки авто-защищены whitelist-грантами 20260707120000/20260709150000.",
+      "fileStructure": [
+        "supabase/migrations/20260710120000_stage4_catalog_moderation.sql (NEW: фасеты+модерация+счётчик+hub grant-lock)",
+        "supabase/migrations/20260710120100_stage4_trust_promotion.sql (NEW: maybe_promote_exam_profile_trust)",
+        "src/lib/db/migrations.test.ts (MOD: пины колонок/индексов/триггеров/грантов; PGlite с extensions:{pg_trgm})",
+        "src/lib/supabase/database.types.ts (MOD: регенерация — listed/learner_count/country + rpc-функции)",
+        "src/features/exam-profile/catalog.ts (NEW: сборка list-запроса, фильтры/сорт/пагинация, LISTED-фильтр slug !~ '-x[0-9a-f]{6}$', trgm-подсказки)",
+        "src/features/exam-profile/catalog.test.ts (NEW)",
+        "src/features/exam-profile/repo.ts (MOD: listExamProfiles, suggestSimilarProfiles, creatorName)",
+        "src/app/(marketing)/exams/page.tsx (NEW: каталог, ISR revalidate=300)",
+        "src/app/(marketing)/exams/[slug]/page.tsx (MOD: listed-aware заглушка, noindex, generateMetadata+JSON-LD, revalidate=3600, generateStaticParams, learner_count, «открыт X»)",
+        "src/components/exam-catalog/card.tsx (NEW: карточка — title/trust-бейдж/learner_count/«открыт X»)",
+        "src/components/exam-catalog/filters.tsx (NEW: фильтры+поиск+сорт, client)",
+        "src/components/exam-catalog/pagination.tsx (NEW)",
+        "src/components/profile-unlisted-stub.tsx (NEW: заглушка скрытого профиля)",
+        "src/app/sitemap.ts (NEW: только listed без -x)",
+        "src/app/robots.ts (NEW)",
+        "src/lib/auth/is-admin.ts (NEW: ADMIN_EMAILS allowlist) + is-admin.test.ts",
+        "src/app/api/admin/exam-profiles/[id]/route.ts (NEW: PATCH hide|unhide|verify, service-role за isAdmin)",
+        "src/app/(app)/admin/page.tsx (NEW: триаж репортов, service-role агрегат)",
+        "src/app/api/hq/[hqId]/recompute/route.ts (MOD: best-effort trust-promotion шаг за TRUST_AUTO_PROMOTE)",
+        "src/app/page.tsx (MOD: ссылка на каталог /exams под поиском)",
+        "messages/ru.json + messages/kk.json (MOD: namespaces catalog/admin + ключи profile.learners/discoveredBy/unlistedStub)",
+        ".env.example (MOD: +ADMIN_EMAILS, +TRUST_AUTO_PROMOTE)",
+        "docs/decisions/trust-promotion.md (MOD: предложенное правило B-guarded, статус «предложено, ждёт ратификации»)"
+      ],
+      "taskList": [
+        {
+          "n": 1,
+          "name": "Миграция A: фасеты каталога + модерация + learner_count + hub grant-lock",
+          "files": [
+            "supabase/migrations/20260710120000_stage4_catalog_moderation.sql",
+            "src/lib/db/migrations.test.ts",
+            "src/lib/supabase/database.types.ts"
+          ],
+          "deliverable": "pg_trgm; колонки exam_profiles.listed/learner_count/country(generated); индексы (language, country, trust, learner_count desc+created_at desc, gin title trgm); SECURITY DEFINER триггеры bump_learner_count (study_hqs ins/del) и auto_unlist_on_report (>=2 репорта -> listed=false); функция exam_profile_creator_name(uuid); backfill learner_count и unlist; grant-lock hubs (revoke update; grant update(title,description,visibility)).",
+          "acceptance": "Пины зелёные (EXPECTED_TABLES БЕЗ изменений); под ролью authenticated insert/update listed/learner_count отклоняется, а старый insert-путь (slug,title,language,spec,sources,origin,created_by) работает; insert/delete study_hq двигает learner_count; 2-й репорт от другого юзера ставит listed=false; owner хаба НЕ может update stars_count, может title; exam_profile_creator_name отдаёт display_name анону; backfill корректен.",
+          "tdd": true,
+          "notes": "СНАЧАЛА failing-пины в migrations.test.ts. ГОТЧА: new PGlite() не знает pg_trgm — конструировать с extensions:{pg_trgm} из @electric-sql/pglite/contrib/pg_trgm. Комментарии в миграции со ссылками на D-решения (конвенция репо). Деплой строго после 130000/140000/150000 (ops-блокер: SUPABASE_SECRET_KEY + одобрение Адлета)."
+        },
+        {
+          "n": 2,
+          "name": "Data-layer каталога: listExamProfiles + «возможно вы имели в виду»",
+          "files": [
+            "src/features/exam-profile/catalog.ts",
+            "src/features/exam-profile/catalog.test.ts",
+            "src/features/exam-profile/repo.ts"
+          ],
+          "deliverable": "listExamProfiles({q,language,country,trust,sort:'popular'|'new',page}): listed=true AND slug !~ '-x[0-9a-f]{6}$', ilike по title, offset .range() по 20; suggestSimilarProfiles(q): при 0 exact — pg_trgm similarity>0.3 top-5 listed; creatorName(profileId) через rpc.",
+          "acceptance": "Профиль юзера A находится с фильтрами language/country/trust; -x-слаги и unlisted исключены из списка И подсказок; сорт popular по learner_count desc, tie-break created_at desc; пустой exact-поиск даёт trgm-подсказки; ноль импортов из src/lib/llm (ассерт).",
+          "tdd": true,
+          "notes": "Интерфейс repo объявляется в catalog.ts, supabase-реализация в repo.ts (конвенция feature-слоя). PostgREST regex-фильтр: .not('slug','match','-x[0-9a-f]{6}$'); similarity — через rpc или .or с pg_trgm оператором — выбрать при имплементации, поведение пиновать интеграционно в migrations.test.ts (T1 уже создала индекс)."
+        },
+        {
+          "n": 3,
+          "name": "Страница /exams: каталог + фильтры + i18n",
+          "files": [
+            "src/app/(marketing)/exams/page.tsx",
+            "src/components/exam-catalog/card.tsx",
+            "src/components/exam-catalog/filters.tsx",
+            "src/components/exam-catalog/pagination.tsx",
+            "messages/ru.json",
+            "messages/kk.json",
+            "src/app/page.tsx"
+          ],
+          "deliverable": "Публичная ISR-страница (revalidate=300) в (marketing): серверный список из listExamProfiles, client-фильтры/поиск/сорт через searchParams, карточки (title, trust-бейдж profile.trust_*, «N готовятся», «открыт X»), блок «возможно вы имели в виду» при 0 результатов, LocaleSwitcher, ссылка с главной.",
+          "acceptance": "Roadmap 4.1: профиль, созданный одним пользователем, находится другим через каталог (анонимно, без auth); фильтры и пагинация работают через URL; unlisted/-x не видны; все строки через next-intl, паритет ru/kk зелёный (messages.test.ts).",
+          "tdd": true,
+          "notes": "ОБЯЗАТЕЛЬНО прочитать node_modules/next/dist/docs (Next 16.2.10 нестандартный) до кода роутов — searchParams/ISR API могут отличаться. Нейтральный Tailwind (rounded border, gray-*), без палитр — дизайн делает партнёр."
+        },
+        {
+          "n": 4,
+          "name": "SEO-обвязка: metadata + JSON-LD + sitemap + robots",
+          "files": [
+            "src/app/(marketing)/exams/[slug]/page.tsx",
+            "src/app/sitemap.ts",
+            "src/app/robots.ts",
+            "src/app/(marketing)/exams/page.tsx"
+          ],
+          "deliverable": "/exams/[slug]: generateMetadata (title '{examName} — формат, разделы, даты | U-Pal', description из spec.description, canonical, OG), JSON-LD Course, revalidate=3600 + generateStaticParams (витринные слаги) + dynamicParams; sitemap.ts — /exams + все listed-слаги без -x (переиспользует catalog.ts-фильтр); robots.ts — allow /exams*, disallow /api,/onboarding,(app)-пути; на /exams фильтрованные/поисковые/страничные виды — noindex + canonical на /exams.",
+          "acceptance": "Sitemap не содержит unlisted и -x-слагов (unit-тест); detail-страница отдаёт canonical/OG/JSON-LD из spec (экзамен-агностично); -x-слаг по прямому URL рендерится с robots noindex; ?q=/фильтры noindex.",
+          "tdd": true,
+          "notes": "Зависит от T2 (общий listed-фильтр — единственный источник истины). Сверить metadata/sitemap/robots API по node_modules/next/dist/docs. Cookie-локаль: корректный <html lang>, URL-локали — зафиксированный SEO-долг."
+        },
+        {
+          "n": 5,
+          "name": "Модерация-рендер: заглушка unlisted + isAdmin helper",
+          "files": [
+            "src/app/(marketing)/exams/[slug]/page.tsx",
+            "src/components/profile-unlisted-stub.tsx",
+            "src/lib/auth/is-admin.ts",
+            "src/lib/auth/is-admin.test.ts",
+            "messages/ru.json",
+            "messages/kk.json"
+          ],
+          "deliverable": "listed-aware рендер профиля: !listed -> создатель (row.created_by===uid) и isAdmin видят полную страницу (RefineForm-путь жив), остальные — нейтральная i18n-заглушка «снят с публикации/на проверке» + robots noindex; isAdmin(email) по env ADMIN_EMAILS (comma-sep, case-insensitive, пустой env = никто).",
+          "acceptance": "Unlisted-профиль: чужой юзер/аноним видит заглушку с noindex (не сырой 404 — ссылки живы); создатель видит полную страницу и RefineForm; listed-профиль — без регрессий (существующая верстка секций/вариантов не тронута); isAdmin: пустой/битый env -> false.",
+          "tdd": true,
+          "notes": "Битая spec unlisted-профиля НЕ должна давать 500 — заглушка рендерится до spec-парсинга для не-создателя."
+        },
+        {
+          "n": 6,
+          "name": "Admin-контур: API модерации + триаж-страница",
+          "files": [
+            "src/app/api/admin/exam-profiles/[id]/route.ts",
+            "src/app/(app)/admin/page.tsx",
+            ".env.example",
+            "messages/ru.json",
+            "messages/kk.json"
+          ],
+          "deliverable": "PATCH /api/admin/exam-profiles/[id] body {action:'hide'|'unhide'|'verify'} (zod, ошибки snake_case): auth 401 -> isAdmin 403 -> supabaseAdmin() ставит listed/trust='verified' -> 404 если профиля нет; страница (app)/admin (не-админ -> notFound): список профилей с report-count (service-role агрегат по exam_profile_reports, RLS не трогаем) + learner_count + trust, кнопки hide/unhide/verify; .env.example += ADMIN_EMAILS.",
+          "acceptance": "Не-админ -> 403, аноним -> 401; hide убирает профиль из каталога и sitemap, URL показывает заглушку; unhide возвращает; verify ставит trust='verified' и бейдж виден в каталоге и на профиле (закрывает roadmap 4.5 verified-путь); репортнутые профили видны в триаже по убыванию репортов.",
+          "tdd": true,
+          "notes": "supabaseAdmin() уже существует (src/lib/supabase/admin.ts) — НЕ импортировать в клиентские компоненты. Требует SUPABASE_SECRET_KEY в Vercel (тот же ops-блокер)."
+        },
+        {
+          "n": 7,
+          "name": "Trust-promotion: миграция B + wiring в recompute + атрибуция «открыт X»",
+          "files": [
+            "supabase/migrations/20260710120100_stage4_trust_promotion.sql",
+            "src/app/api/hq/[hqId]/recompute/route.ts",
+            "src/app/(marketing)/exams/[slug]/page.tsx",
+            "src/components/exam-catalog/card.tsx",
+            "docs/decisions/trust-promotion.md",
+            "src/lib/db/migrations.test.ts",
+            "src/lib/supabase/database.types.ts",
+            ".env.example"
+          ],
+          "deliverable": "SECURITY DEFINER maybe_promote_exam_profile_trust(uuid): ai_draft->data_refined при >=5 distinct юзеров с finished_at (attempts->tests->study_hqs) И 0 репортов И listed, forward-only, идемпотентна, grant execute authenticated; best-effort rpc-вызов в конце recompute за process.env.TRUST_AUTO_PROMOTE==='1' (ошибка -> console.warn, не роняет ответ); «открыт пользователем X» на странице профиля и карточке через exam_profile_creator_name; обновление trust-promotion.md (предложено, ждёт ратификации N=5/флага).",
+          "acceptance": "PGlite: сид 5 distinct finished-попыток, 0 репортов -> флип в data_refined; 4 юзера или >=1 репорт -> остаётся ai_draft; повторный вызов — no-op; verified функцией недостижим (только admin-роут T6); с выключенным флагом recompute ничего не промоутит; «открыт X» показывает display_name создателя аноним-читателю.",
+          "tdd": true,
+          "notes": "Разблокирует roadmap 4.5 без ожидания основателя: механика шипится, включение = флип env-флага (ратификация). Не менять клиентские гранты trust — функция definer-ом обходит их легитимно."
+        }
+      ],
+      "migrations": [
+        "20260710120000_stage4_catalog_moderation.sql — АДДИТИВНО: create extension if not exists pg_trgm; alter table public.exam_profiles add column listed boolean not null default true, add column learner_count int not null default 0, add column country text generated always as (spec->>'country') stored; create index exam_profiles_language_idx on exam_profiles(language); exam_profiles_country_idx(country); exam_profiles_trust_idx(trust); exam_profiles_popular_idx(learner_count desc, created_at desc); exam_profiles_title_trgm_idx using gin (title gin_trgm_ops); функция+триггер bump_learner_count() security definer set search_path=public on study_hqs after insert or delete (update exam_profiles set learner_count = learner_count +/- 1); функция+триггер auto_unlist_on_report() security definer on exam_profile_reports after insert (если (select count(*) from exam_profile_reports where reported_profile_id = NEW.reported_profile_id) >= 2 -> update exam_profiles set listed=false where id=NEW.reported_profile_id and listed); create function exam_profile_creator_name(p_profile_id uuid) returns text security definer (select p.display_name from exam_profiles ep join profiles p on p.id=ep.created_by where ep.id=p_profile_id) + grant execute to anon, authenticated; backfill: update exam_profiles p set learner_count=(select count(*) from study_hqs h where h.exam_profile_id=p.id); update exam_profiles set listed=false where id in (select reported_profile_id from exam_profile_reports group by 1 having count(*)>=2); hub grant-lock: revoke update on public.hubs from anon, authenticated; grant update (title, description, visibility) on public.hubs to authenticated. НОВЫЕ КОЛОНКИ вне whitelist-грантов 20260707120000/20260709150000 -> клиент их не пишет автоматически; select-гранты табличного уровня -> читаемы без доп. grant.",
+        "20260710120100_stage4_trust_promotion.sql — АДДИТИВНО: create function maybe_promote_exam_profile_trust(p_profile_id uuid) returns boolean security definer set search_path=public: if trust='ai_draft' and listed and (select count(distinct a.user_id) from attempts a join tests t on t.id=a.test_id join study_hqs h on h.id=t.hq_id where h.exam_profile_id=p_profile_id and a.finished_at is not null) >= 5 and (select count(*) from exam_profile_reports where reported_profile_id=p_profile_id) = 0 then update exam_profiles set trust='data_refined' where id=p_profile_id and trust='ai_draft'; forward-only, идемпотентно, verified недостижим; grant execute to authenticated (безопасно: правило детерминировано и не зависит от вызывающего); порог 5 — константа с комментарием-ссылкой на trust-promotion.md, смена = follow-up миграция.",
+        "ПОРЯДОК ДЕПЛОЯ (критично): обе миграции строго ПОСЛЕ применения ожидающих 20260709130000/140000/150000, которые сами ждут SUPABASE_SECRET_KEY в Vercel и одобрения Адлета (ops-блокер до старта этапа). Совместимость: select * на exam_profiles отдаёт 3 новые колонки (spec-safeParse и точечные .eq-запросы не задеты); database.types.ts обязательно регенерировать; EXPECTED_TABLES в migrations.test.ts НЕ меняется (новых таблиц нет); PGlite-тестам нужен pg_trgm через extensions-опцию конструктора."
+      ],
+      "openQuestions": [
+        "РАТИФИКАЦИЯ СРЕЗА ХАБОВ (основатель, Адлет): хабы/клоны/редактор (roadmap 4.2–4.4) целиком уезжают в fast-follow ранний этап 5 — первая половина MVP-критерия №4 («внешний автор опубликовал хаб; ученик по клонированному хабу») сдвигается за MVP-этап 4; авторский путь на бете = JSON-импорт заданий (S2-Task 8) + refine профиля. Подтвердить трейд-офф.",
+        "TRUST-PROMOTION (закрывает docs/decisions/trust-promotion.md): предложено детерминированное правило B-guarded — ai_draft->data_refined при >=5 разных завершивших И 0 репортов; verified только вручную; вариант A (refine создателем) отвергнут как авто-триггер. Механика шипится выключенной; включение TRUST_AUTO_PROMOTE=1 = ратификация порога N=5. Подтвердить N и включение.",
+        "Порог авто-скрытия по репортам = 2 разных юзера (unique(profile,user) гарантирует различность) — ок? И нужен ли точечный ручной hide уже известного мусора с 1 репортом (ретро «свалка НИШ») через /admin?",
+        "«Возможно вы имели в виду» — обещание НЕ найдено в доках репо (только в брифе оркестратора); trgm-версия (similarity по title, top-5, 0 LLM) включена в T2 — подтвердить у Адлета, что это соответствует устной договорённости, или вырезать (режется без последствий).",
+        "Список витринных «прогретых» экзаменов для generateStaticParams (T4) — от основателя (3–5 слагов).",
+        "OPS-БЛОКЕРЫ ДО СТАРТА (унаследовано): SUPABASE_SECRET_KEY в Vercel -> применить 130000/140000/150000 (одобрение Адлета) -> только затем миграции этапа 4; OpenRouter-кредиты исчерпаны (402); прод-smoke этапов 2.5/3 не прогнаны. Без секретного ключа admin-контур (T6) не работает в проде.",
+        "ADMIN_EMAILS: чьи email входят (только Адлет? +Дияр?) — задать в Vercel env при деплое T6.",
+        "После ратификации дизайна — запись вехи в Обсидиан-журнал (C:\\Users\\adlet\\OneDrive\\Документы\\Projects\\upal\\Журнал вех.md) по правилу AGENTS.md — делает родительская сессия при закрытии планирования."
+      ],
+      "deferrals": [
+        "Хабы целиком: страница хаба, звёзды-UI (hub_stars спит), клонирование (origin_hub_id), редактор/CRUD author, публикация -> fast-follow ранний этап 5; при пробуждении СНАЧАЛА триггер stars_count на hub_stars + полная column-grant-волна (grant-lock уже поставлен миграцией A) — зафиксировать memo.",
+        "UI импорта заданий и модерация банка (унаследованный деферрал «-> этап 4» из stage-2) -> этап 5 вместе с authoring-инструментами; бэкенд JSON-импорта работает уже сейчас.",
+        "exam_profile_stars (follow/save профилей юзером) — не делаем; при необходимости зеркалится с hub_stars один-в-один.",
+        "Рейтинг по исходам (настоящий ров) — только копим attempt_items с первого дня; показ/сортировка — post-MVP мес 5–8 (product-plan §4/§6).",
+        "Time-decay/взвешенные формулы популярности, materialized views, cron-воркеры — нет; событийные триггер-счётчики достаточны на MVP-масштабе.",
+        "Semantic-дедуп профилей (embeddings) — вне скоупа; trgm-«возможно вы имели в виду» — единственная мягкая мера; каталог может показать дубли рядом (известный хвост, не блокер).",
+        "URL-префиксные локали для полноценного i18n-SEO — зафиксированный SEO-долг post-MVP (cookie-локаль + корректный <html lang> остаются).",
+        "Keyset-пагинация каталога — при росте до тысяч профилей; offset .range() достаточен.",
+        "Таблица ролей модераторов / роль «Автор» как полноценная сущность — env ADMIN_EMAILS достаточно для MVP.",
+        "Авто-verified и авто-downgrade trust — никогда: verified только руками, деградацию контента лечит listed-модерация, trust двигается только вверх.",
+        "Durable rate limiter (Redis/таблица) — до платного запуска; этап 4 — чтение, LLM-спенда не добавляет (0 LLM во всех задачах).",
+        "3-состоянийный moderation-enum (listed/unlisted/hidden) — если boolean+slug-паттерн перестанет хватать (спам, требующий скрытия даже по прямому URL) — аддитивно расширяется."
+      ]
+    },
+    "designCount": 3
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Context"
+    },
+    {
+      "type": "workflow_phase",
+      "index": 2,
+      "title": "Design"
+    },
+    {
+      "type": "workflow_phase",
+      "index": 3,
+      "title": "Judge"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "reader:contracts",
+      "phaseIndex": 1,
+      "phaseTitle": "Context",
+      "agentId": "acfce645c7c4b80f3",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1783504126607,
+      "lastProgressAt": 1783504126607,
+      "cached": true,
+      "resultPreview": "{\"summary\":\"U-Pal — Next.js (App Router) + Supabase. Ядро домена в supabase/migrations/20260705120100_core_schema.sql: exam_profiles (весь экзамен в jsonb spec, поля origin/trust), hubs + hub_stars (заложены в схему, но НЕ используются ни в одном UI/API), exam_profile_reports (20260708120100, пишутся best-effort при reroll «не тот экзамен»). Публичные поверхности: главная src/app/page.tsx (поиск э…",
+      "promptPreview": "Ты — картограф кодовой базы U-Pal (repo C:\\Users\\adlet\\OneDrive\\Документы\\upalhub). Прочитай и верни карту для проектирования этапа 4 (открытая библиотека):\n1. supabase/migrations/*core_schema.sql — таблицы hubs, hub_stars, exam_profiles (trust/origin!), exam_profile_reports (+ миграция 20260708120100), их RLS ДОСЛОВНО.\n2. src/app/exams/[slug]/page.tsx (какой путь — (marketing)?) — публичная стран…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "reader:requirements",
+      "phaseIndex": 1,
+      "phaseTitle": "Context",
+      "agentId": "a586559d02523e628",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1783504126608,
+      "lastProgressAt": 1783504126608,
+      "cached": true,
+      "resultPreview": "{\"summary\":\"Этап 4 «Библиотека» (2 нед, нед 12–13, между вехой C — старт закрытой беты — и вехой D — запуск) превращает накопленные профили/хабы в публичный каталог: поиск/фильтры, страница хаба со звёздами, клонирование, редактор хаба с публикацией и trust-механика профилей. Продуктово это слой 2 («GitHub для подготовки к экзаменам») — ров продукта, при этом рейтинг по исходам сознательно НЕ вход…",
+      "promptPreview": "Ты — аналитик требований U-Pal (repo C:\\Users\\adlet\\OneDrive\\Документы\\upalhub). Прочитай:\n1. docs/superpowers/plans/2026-07-05-u-pal-mvp-roadmap.md — раздел «Этап 4» (задачи дословно) + вехи + Global Constraints.\n2. docs/product-plan.md — слой «открытая библиотека» (профили+хабы, клоны, звёзды, рейтинг по исходам — ров продукта!), критерии MVP.\n3. .superpowers/sdd/progress.md — унаследованные def…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "design:growth-loop",
+      "phaseIndex": 2,
+      "phaseTitle": "Design",
+      "agentId": "a02fe75938607b353",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1783504132568,
+      "queuedAt": 1783504126636,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "РОСТ И SEO. Библиотека = органический канал привлечения: ст…",
+      "promptPreview": "Ты проектируешь ЭТАП 4 U-Pal (открытая библиотека). Твоя линза: РОСТ И SEO. Библиотека — органический канал: страницы профилей должны индексироваться и приводить учеников; «звезда» и счётчик учеников — социальное доказательство; каталог — точка входа без регистрации. Думай: ISR/sitemap, метаданные, что видно анониму, конверсия каталог→онбординг.\n\nКОНТРАКТЫ: {\"summary\":\"U-Pal — Next.js (App Router)…",
+      "lastProgressAt": 1783504474368,
+      "tokens": 61858,
+      "toolCalls": 8,
+      "durationMs": 341799,
+      "resultPreview": "{\"lens\":\"РОСТ И SEO. Библиотека = органический канал привлечения: страницы профилей — это индексируемые SSR/ISR-лендинги, которые ранжируются по запросам «[экзамен] формат/разделы/даты» и без регистрации ведут анонима в воронку каталог→профиль→«Готовиться»→онбординг. Приоритет этапа с моей линзы = (1) индексируемый каталог + богатые метаданные/sitemap/JSON-LD на профилях, (2) честное социальное до…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 4,
+      "label": "design:integrity",
+      "phaseIndex": 2,
+      "phaseTitle": "Design",
+      "agentId": "a6963340cbce79148",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1783504131481,
+      "queuedAt": 1783504126637,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "ЦЕЛОСТНОСТЬ И МОДЕРАЦИЯ: каталог — это чтение (≈0-LLM), но …",
+      "promptPreview": "Ты проектируешь ЭТАП 4 U-Pal (открытая библиотека). Твоя линза: ЦЕЛОСТНОСТЬ И МОДЕРАЦИЯ. Библиотека загрязняется: reroll-мусор с hash-слагами уже в проде, репорты копятся, звёзды накручиваются мультиаккаунтами, trust нельзя раздавать автоматом слишком легко. Думай: unlisted-механика, автоскрытие мусора, дедуп-сигналы, консервативный trust-критерий, RLS против накруток.\n\nКОНТРАКТЫ: {\"summary\":\"U-Pa…",
+      "lastProgressAt": 1783504502481,
+      "tokens": 63062,
+      "toolCalls": 6,
+      "durationMs": 370998,
+      "resultPreview": "{\"lens\":\"ЦЕЛОСТНОСТЬ И МОДЕРАЦИЯ: каталог — это чтение (≈0-LLM), но публикация без гейта загрязняет общий актив. Инвариант: в индекс/sitemap/поиск попадает только «чистое» (moderation='listed', не reroll-мусор -x<hash6>); все счётчики (stars/usage/reports/refined) и trust — DB-authoritative через триггеры + column-grant revoke, чтобы владелец/мультиаккаунт не подделал их через PostgREST; trust/ver…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 5,
+      "label": "design:simplicity",
+      "phaseIndex": 2,
+      "phaseTitle": "Design",
+      "agentId": "a2de4c964308a77e0",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1783504132140,
+      "queuedAt": 1783504126639,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "ПРОСТОТА И ЦЕНА. Этап 4 = библиотека = ЧТЕНИЕ: 0 LLM, миним…",
+      "promptPreview": "Ты проектируешь ЭТАП 4 U-Pal (открытая библиотека). Твоя линза: ПРОСТОТА И ЦЕНА. Этап 4 должен быть маленьким: 0 LLM, минимум миграций, никаких cron/materialized view если хватает индекса, хабы/клоны — резать если не критичны для MVP-вех. Думай: что даёт 80% ценности за 20% кода; какие сигналы популярности уже лежат в БД бесплатно.\n\nКОНТРАКТЫ: {\"summary\":\"U-Pal — Next.js (App Router) + Supabase. Я…",
+      "lastProgressAt": 1783504490966,
+      "tokens": 46806,
+      "toolCalls": 4,
+      "durationMs": 358826,
+      "resultPreview": "{\"lens\":\"ПРОСТОТА И ЦЕНА. Этап 4 = библиотека = ЧТЕНИЕ: 0 LLM, минимум таблиц, никакого cron/materialized view (хватает plain view + btree/gin индексов), никакого денормализованного счётчика с триггером (именно он породил дыру hubs.stars_count). Ключевой вывод из схемы: «бесплатные» сигналы популярности (study_hqs/attempts count) заперты RLS «own X» — публичный каталог их не прочитает без service-…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 6,
+      "label": "judge:synthesis",
+      "phaseIndex": 3,
+      "phaseTitle": "Judge",
+      "agentId": "a02e2ff8cec513ef1",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1783504507850,
+      "queuedAt": 1783504502485,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Этап 4 «Библиотека» = чтение: 0 LLM, 0 cron, 2 аддитивные м…",
+      "promptPreview": "Ты — главный架 архитектор U-Pal. Синтезируй ЕДИНЫЙ финальный дизайн этапа 4 из 3 дизайнов (линзы: рост/целостность/простота).\n\nКОНТРАКТЫ: {\"summary\":\"U-Pal — Next.js (App Router) + Supabase. Ядро домена в supabase/migrations/20260705120100_core_schema.sql: exam_profiles (весь экзамен в jsonb spec, поля origin/trust), hubs + hub_stars (заложены в схему, но НЕ используются ни в одном UI/API), exam_pr…",
+      "lastProgressAt": 1783505031143,
+      "tokens": 96936,
+      "toolCalls": 12,
+      "durationMs": 523293,
+      "resultPreview": "{\"finalDecisions\":{\"D1_catalog\":\"ВЫБОР: публичный роут src/app/(marketing)/exams/page.tsx (server component, анонимное чтение через RLS 'exam profiles public read', 0 LLM). Данные — новый listExamProfiles в repo + чистая сборка запроса в src/features/exam-profile/catalog.ts: фильтры language (существующая колонка), country (НОВАЯ генерируемая колонка `country text generated always as (spec->>'coun…"
+    }
+  ],
+  "totalTokens": 268662,
+  "totalToolCalls": 30
+}
