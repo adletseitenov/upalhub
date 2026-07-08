@@ -1,5 +1,7 @@
 # U-Pal Stage 3 — Knowledge Map, Weekly Plan, Forecast, Review (Implementation Plan)
 
+> **STATUS (2026-07-08): КОД ЭТАПА ЗАВЕРШЁН (READY).** Все 9 задач + mid-stage мега-ревью всей кодовой базы (23 агента, 6 подтверждённых находок закрыто) + финал-ревью Fable + фикс-волна (admin-мостик taskReadClient, examDatePassed-баннер, cleanup). 643 теста. Миграция этапа применена к живой БД. ⚠️ ПОРЯДОК ДЕПЛОЯ: SUPABASE_SECRET_KEY в Vercel env → (мостик перестанет warn'ить) → миграция 20260709130000 (закрытие answer-утечки) → 20260709140000 (bank-poisoning) — обе ждут ключа и одобрения Адлета. Вне кода: OpenRouter-кредиты (генерация+explain), прод-smoke, клик-тест.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development. Леджер: .superpowers/sdd/progress.md (секция Stage 3).
 
 **Goal:** Попытки ученика превращаются в честную карту знаний по темам, понедельный план до даты экзамена, консервативный прогноз балла с диапазоном, разбор ошибок (включая транскрипт аудио) и цель в онбординге — всё на одном дашборде штаба.
