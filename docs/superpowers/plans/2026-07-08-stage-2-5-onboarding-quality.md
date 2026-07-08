@@ -1,5 +1,7 @@
 # U-Pal Stage 2.5 — Interview Onboarding, Honest Engine, Audio (Implementation Plan)
 
+> **STATUS (2026-07-08): КОД ЭТАПА ЗАВЕРШЁН.** Все 10 задач + финал-ревью + верифицированная фикс-волна (reconfigure-путь 422, лимитер+24k на refine, UX-полировка). 370 тестов. Все 3 миграции применены к живой БД (Management API). Eval качества: flash 100% onTopic / 100% kk-language / 77% keyCorrect; pro 100/100/85 — рекомендация-черновик в docs/decisions/generation-model.md (ОЖИДАЕТ основателя). Остаток вне кода: пополнение OpenRouter-кредитов (402 — блокер прод-генерации), прод-smoke чеклист Task 10, клик-тест основателя, data-fix modality для старого ielts-профиля (по согласию).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Закрыть фидбэк основателя с прода: AI-интервью при создании штаба (выбор варианта/профильных, дата), «Не тот экзамен» с уточнением, честная сборка (нет пустых секций, «Дособрать»), привязка заданий к секции, работающее аудио для listening (браузерный TTS), качество генерации измеряется eval-судьёй.
