@@ -7,8 +7,15 @@ import { submitAttempt } from "@/features/attempts/service";
 import { taskAnswerSchema, taskBodySchema, validateTaskPair } from "@/features/tasks/schema";
 import type { StoredTask } from "@/features/tasks/repo";
 import type { Database } from "@/lib/supabase/database.types";
+import { recomputeHqInsights, supabaseHqReader } from "@/features/hq/recompute";
+import { supabaseKnowledgeRepo } from "@/features/knowledge/repo";
 
 type TaskRow = Database["public"]["Tables"]["tasks"]["Row"];
+
+// D7: submit-хук может теперь дозвониться до recomputeHqInsights (карта +
+// в T4/T5 план/прогноз) после грейдинга — тот же maxDuration=60, что и у
+// сборки/дособорки теста (см. /api/tests, /api/tests/[testId]/refill).
+export const maxDuration = 60;
 
 // Локальный эквивалент приватного rowToTaskSafe из tasks/repo.ts — тот не
 // экспортируется, а контракт repo.ts менять нельзя (бриф T6). Это ЕДИНСТВЕННЫЙ
@@ -75,10 +82,26 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     .map(rowToStoredTask)
     .filter((task): task is StoredTask => task !== null);
 
+  const now = new Date();
   const result = await submitAttempt(
     { repo: attemptRepo },
-    { attemptId: attempt.id, test, tasks, userId: data.user.id, now: new Date() },
+    { attemptId: attempt.id, test, tasks, userId: data.user.id, now },
   );
+
+  // D7: пересчёт карты знаний (+ в T4/T5 план/прогноз) — best-effort после
+  // успешного submit. Сбой/таймаут пересчёта НЕ должен валить уже
+  // посчитанный результат попытки: глотаем и логируем, ответ уходит как
+  // обычно. Пересчёт читает только topic/difficulty банка (не
+  // answer/explanation), поэтому user-клиент (тот же `supabase`, что
+  // подтвердил ownership выше) достаточен — admin-клиент здесь не нужен.
+  try {
+    await recomputeHqInsights(
+      { hqReader: supabaseHqReader(supabase), knowledgeRepo: supabaseKnowledgeRepo(supabase) },
+      { hqId: test.hqId, now },
+    );
+  } catch (err) {
+    console.warn(`attempts/submit: recompute failed for hq=${test.hqId}`, err);
+  }
 
   return NextResponse.json(result);
 }
