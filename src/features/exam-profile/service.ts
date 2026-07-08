@@ -11,7 +11,7 @@ export type NewExamProfile = {
   spec: ExamProfileSpec;
   sources: SourceRef[];
   origin: "ai_research" | "uploaded" | "manual";
-  trust: "ai_draft" | "data_refined" | "verified";
+  trust?: "ai_draft" | "data_refined" | "verified";
 };
 export type StoredExamProfile = NewExamProfile & { id: string };
 
@@ -68,7 +68,6 @@ export async function findOrCreateExamProfile(
     spec,
     sources,
     origin: "ai_research",
-    trust: "ai_draft",
   });
   return { profile, created: true };
 }

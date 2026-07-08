@@ -35,7 +35,7 @@ function memoryRepo(
       return corrupt.has(slug) || rows.some((r) => r.slug === slug);
     },
     async insert(p) {
-      const stored = { ...p, id: `id-${rows.length + 1}` } as StoredExamProfile;
+      const stored = { ...p, id: `id-${rows.length + 1}`, trust: p.trust ?? "ai_draft" } as StoredExamProfile;
       rows.push(stored);
       return stored;
     },

@@ -61,6 +61,9 @@ export function supabaseExamProfileRepo(
     },
 
     async insert(p: NewExamProfile) {
+      // D-security-backlog: trust not included in insert — column-grant 20260709150000
+      // revokes insert on trust column; DB default = 'ai_draft' (same as service.ts).
+      // rowToProfile reads trust from returned row as before.
       const { data, error } = await client
         .from("exam_profiles")
         .insert({
@@ -70,7 +73,6 @@ export function supabaseExamProfileRepo(
           spec: p.spec as unknown as Json,
           sources: p.sources as unknown as Json,
           origin: p.origin,
-          trust: p.trust,
           created_by: userId ?? null,
         })
         .select("*")
