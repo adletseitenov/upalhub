@@ -186,6 +186,60 @@ describe("examProfileSpecSchema", () => {
     ).toThrow();
   });
 
+  // Backlog wave fix5: variants[].key must be unique — used as a lookup key
+  // (spec.variants.find(v => v.key === config.variantKey) in selection.ts).
+  it("rejects a spec with duplicate variant keys", () => {
+    expect(() =>
+      examProfileSpecSchema.parse({
+        ...megaValid,
+        variants: [
+          megaValid.variants[0],
+          { ...megaValid.variants[1], key: megaValid.variants[0].key },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  // Backlog wave fix5: selectionGroups[].key must be unique — same lookup
+  // role as variants[].key (group.key identifies a group in error messages
+  // and in resolveActiveSections' per-group loop).
+  it("rejects a spec with duplicate selectionGroups keys", () => {
+    expect(() =>
+      examProfileSpecSchema.parse({
+        ...megaValid,
+        sections: [...megaValid.sections, { name: "Французский", taskTypes: [], topics: [] }],
+        selectionGroups: [
+          megaValid.selectionGroups[0],
+          {
+            key: megaValid.selectionGroups[0].key,
+            title: "Другая группа",
+            chooseCount: 1,
+            sectionNames: ["Английский", "Французский"],
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  // Backlog wave fix5: sectionNames WITHIN one selectionGroup must be
+  // unique — resolveActiveSections/validateHqConfig build Set-shaped pools
+  // from this array, so a duplicate would silently collapse.
+  it("rejects a selectionGroup with duplicate sectionNames", () => {
+    expect(() =>
+      examProfileSpecSchema.parse({
+        ...megaValid,
+        selectionGroups: [
+          {
+            key: "foreign-language",
+            title: "Иностранный язык",
+            chooseCount: 1,
+            sectionNames: ["Английский", "Английский"],
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
   // D2 note: деградация группы относительно КОНКРЕТНОГО варианта (D1) — это
   // НЕ ошибка спеки. Группа может пересекаться с вариантом на меньше, чем
   // chooseCount элементов, и спека всё равно валидна (визард деградирует

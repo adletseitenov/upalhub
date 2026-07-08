@@ -40,8 +40,16 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const current = examProfileSpecSchema.parse(row.spec);
-  const refined = await refineExamSpec({ llm: createLlm() }, current, parsed.data.sampleText);
+  // Backlog wave fix4: .parse() throws on a stale/corrupted spec (manual DB
+  // edit, upstream regression) -> unhandled exception -> 500, after the
+  // limiter token for this call was already burned. safeParse degrades to a
+  // clean 422 instead (same convention as "invalid_config"/"reconfigure_needed"
+  // elsewhere in this API surface — see study-hqs/route.ts, tests/route.ts).
+  const currentParsed = examProfileSpecSchema.safeParse(row.spec);
+  if (!currentParsed.success) {
+    return NextResponse.json({ error: "profile_spec_invalid" }, { status: 422 });
+  }
+  const refined = await refineExamSpec({ llm: createLlm() }, currentParsed.data, parsed.data.sampleText);
 
   const { data: updated, error } = await supabase
     .from("exam_profiles")

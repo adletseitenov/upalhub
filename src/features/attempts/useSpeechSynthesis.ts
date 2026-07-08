@@ -22,6 +22,21 @@ export type UseSpeechSynthesisResult = {
 const KEEP_ALIVE_MS = 10_000; // Chrome pause-bug: speechSynthesis молча
 // засыпает на длинных очередях без периодического resume().
 
+// Backlog wave fix9: window.speechSynthesis — глобальный singleton, но
+// каждый смонтированный useSpeechSynthesis() — свой независимый инстанс
+// (напр. несколько audio-заданий на странице теста). play() ВСЕГДА зовёт
+// cancel() на singleton перед стартом (см. startPlayback ниже) — если
+// инстанс A уже играет и держит keep-alive setInterval, а инстанс B
+// вызывает play(), B молча обрывает очередь A, но A ничего об этом не
+// знает: его keepAliveRef живёт своей жизнью и продолжает resume()
+// глобальный synth каждые 10с, воюя с B за тот же singleton. Module-level
+// счётчик — "кто сейчас реально владеет synth": play()/replay() инкрементят
+// его и запоминают свой токен; keep-alive/pause/resume сверяют СВОЙ токен с
+// текущим владельцем и становятся no-op, если их перехватили — без этого
+// поля инстанс, foreignным play() уже вытесненный, не может отличить себя
+// от актуального владельца.
+let activeSpeechOwner = 0;
+
 const VOICES_READY_TIMEOUT_MS = 1_500; // страховка для браузеров без
 // voiceschanged и без голосов вовсе (iOS Safari в некоторых версиях): после
 // таймаута считаем список голосов финальным, даже если он пуст.
@@ -53,6 +68,9 @@ export function useSpeechSynthesis(text: string, language: string): UseSpeechSyn
   const [playCount, setPlayCount] = useState(0);
 
   const keepAliveRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Backlog wave fix9: 0 = "never claimed ownership yet" (distinct from any
+  // real token, which starts at 1 — see activeSpeechOwner increments below).
+  const ownerTokenRef = useRef(0);
 
   // Async голоса (Chrome): подписка на voiceschanged держит capability в
   // актуальном состоянии, как только браузер догружает голосовой список.
@@ -100,8 +118,13 @@ export function useSpeechSynthesis(text: string, language: string): UseSpeechSyn
 
   const startKeepAlive = useCallback(() => {
     clearKeepAlive();
+    // Backlog wave fix9: closes over the token captured at THIS call's
+    // owner (not a live ref read) — if a later play() from ANY instance
+    // (including a different mount) bumps activeSpeechOwner, this interval
+    // becomes an inert no-op instead of fighting the new owner's playback.
+    const myToken = ownerTokenRef.current;
     keepAliveRef.current = setInterval(() => {
-      if (isSupported()) window.speechSynthesis.resume();
+      if (isSupported() && myToken === activeSpeechOwner) window.speechSynthesis.resume();
     }, KEEP_ALIVE_MS);
   }, [clearKeepAlive]);
 
@@ -129,6 +152,13 @@ export function useSpeechSynthesis(text: string, language: string): UseSpeechSyn
     // "speak") сработает безопасно вместо озвучки неполного состояния.
     const freshCapability = resolveCapability(true, freshVoices, language, voicesReady);
     if (freshCapability.mode !== "speak") return;
+
+    // Backlog wave fix9: claim ownership of the singleton BEFORE cancel()
+    // — any other instance's keep-alive/pause/resume checks this same
+    // counter and stands down once it no longer matches their captured
+    // token.
+    activeSpeechOwner += 1;
+    ownerTokenRef.current = activeSpeechOwner;
 
     // cancel() ПЕРЕД стартом — speechSynthesis глобальный singleton, без
     // этого новая очередь наслаивается поверх недоигранной старой.
@@ -173,19 +203,25 @@ export function useSpeechSynthesis(text: string, language: string): UseSpeechSyn
     startPlayback();
   }, [startPlayback]);
 
+  // Backlog wave fix9: no-op if a later play() (this instance's own replay,
+  // or a DIFFERENT instance) has already taken over the singleton — a stale
+  // owner pausing/resuming would otherwise act on whatever the new owner is
+  // actually playing.
+  const isOwner = useCallback(() => ownerTokenRef.current === activeSpeechOwner, []);
+
   const pause = useCallback(() => {
-    if (!isSupported()) return;
+    if (!isSupported() || !isOwner()) return;
     window.speechSynthesis.pause();
     clearKeepAlive();
     setState("paused");
-  }, [clearKeepAlive]);
+  }, [clearKeepAlive, isOwner]);
 
   const resume = useCallback(() => {
-    if (!isSupported()) return;
+    if (!isSupported() || !isOwner()) return;
     window.speechSynthesis.resume();
     startKeepAlive();
     setState("speaking");
-  }, [startKeepAlive]);
+  }, [startKeepAlive, isOwner]);
 
   const capability = resolveCapability(supported, voices, language, voicesReady);
 

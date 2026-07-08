@@ -37,7 +37,9 @@ export function parseHqConfig(raw: unknown): HqConfig | null {
 
 /**
  * resolveActiveSections (D2, тотальная):
- * - config null/undefined/{} -> все секции спеки (legacy штабы без config).
+ * - config null/undefined/{} (нет variantKey И selectedSectionNames пуст)
+ *   -> ВСЕ секции спеки как есть, БЕЗ group-вычитания (legacy штабы без
+ *   config; backlog wave fix1).
  * - variantKey задан, но не найден среди spec.variants -> база = все секции
  *   (устаревший config не должен ронять сборку).
  * - variantKey найден -> база сужается до секций, чьи имена входят в
@@ -58,6 +60,17 @@ export function resolveActiveSections(
   spec: ExamProfileSpec,
   config: LooseHqConfig | null | undefined,
 ): ExamSection[] {
+  // Backlog wave fix1: config null/{} (нет variantKey И ничего не выбрано) —
+  // ИСТИННО пустой/legacy config. Раньше это ошибочно проваливалось в group
+  // loop ниже: selected пуст -> chosen пуст -> pool (== все sectionNames
+  // группы, т.к. base уже включает их все) вычитался из base целиком, теряя
+  // members любой selectionGroup (документированный контракт "null/{} -> ВСЕ
+  // секции" нарушался для спек с selectionGroups). Ранний выход до
+  // group-вычитания — единственное отличие от общего пути ниже.
+  if (config?.variantKey == null && (config?.selectedSectionNames?.length ?? 0) === 0) {
+    return spec.sections;
+  }
+
   const selected = new Set(config?.selectedSectionNames ?? []);
 
   const variant =

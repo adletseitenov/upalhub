@@ -154,6 +154,22 @@ describe("supabasePlanRepo.replaceFutureWeeks", () => {
     ).rejects.toEqual({ message: "insert failed" });
     expect(builders.study_plan_weeks.calls.some((c) => c.method === "delete")).toBe(true);
   });
+
+  // Backlog wave fix6: concurrent recompute of the same hq (submit-hook vs.
+  // POST recompute racing) can DELETE-then-INSERT twice; the loser of the
+  // race hits a unique(hq_id, week_start) violation (23505) on INSERT. Since
+  // buildStudyPlan is deterministic, the winner already wrote identical
+  // rows — this must resolve quietly instead of surfacing as a 500.
+  it("does not throw when the insert fails with a 23505 unique violation (concurrent replaceFutureWeeks)", async () => {
+    const { client } = fakeSupabase(
+      { study_plan_weeks: { data: null, error: null } },
+      { study_plan_weeks: { data: null, error: { code: "23505", message: "duplicate key" } } },
+    );
+
+    await expect(
+      supabasePlanRepo(client).replaceFutureWeeks("hq-1", [focusWeek("2026-07-06")]),
+    ).resolves.toBeUndefined();
+  });
 });
 
 describe("supabasePlanRepo.loadWeeks", () => {

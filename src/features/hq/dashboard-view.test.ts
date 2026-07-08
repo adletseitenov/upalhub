@@ -8,6 +8,7 @@ import {
   buildKnowledgeMapSections,
   computeGoalGap,
   examDatePassed,
+  hasKnowledgeForActiveSections,
   isHqStale,
   isNarrowForecast,
   parseTargetNumber,
@@ -68,6 +69,32 @@ describe("buildKnowledgeMapSections", () => {
 
   it("preserves section order and skips no sections (empty input -> empty output)", () => {
     expect(buildKnowledgeMapSections([], new Map(), NOW)).toEqual([]);
+  });
+});
+
+// --- hasKnowledgeForActiveSections (backlog wave fix7) -----------------------
+
+describe("hasKnowledgeForActiveSections", () => {
+  it("is false when states is empty", () => {
+    expect(hasKnowledgeForActiveSections([section("Math", ["algebra"])], new Map())).toBe(false);
+  });
+
+  it("is true when a states row's topic belongs to an active section", () => {
+    const states = new Map([["algebra", state()]]);
+    expect(hasKnowledgeForActiveSections([section("Math", ["algebra"])], states)).toBe(true);
+  });
+
+  // The core regression: switching exam variant leaves stale knowledge_states
+  // rows for the OLD variant's topics in the DB. Those rows must not count
+  // as "there is data" for the NEWLY active (disjoint) sections.
+  it("is false when states only has rows for topics OUTSIDE the active sections (stale variant switch)", () => {
+    const states = new Map([["biology-cells", state()]]);
+    expect(hasKnowledgeForActiveSections([section("Math", ["algebra"])], states)).toBe(false);
+  });
+
+  it("falls back to the section name as its sole topic when topics is empty", () => {
+    const states = new Map([["Grammar", state()]]);
+    expect(hasKnowledgeForActiveSections([section("Grammar")], states)).toBe(true);
   });
 });
 

@@ -157,6 +157,20 @@ describe("resolveActiveSections (totality, D2)", () => {
     ).toEqual(["Reading", "Writing"]);
   });
 
+  // Backlog wave fix1: legacy/empty config (null or {}) must return ALL
+  // spec sections even when the spec has selectionGroups — the group loop
+  // must not subtract group members when there's nothing to subtract for
+  // (no variantKey, nothing selected). Regression: this previously dropped
+  // "Английский"/"Немецкий" (selectionGroup members) from a legacy config.
+  it("returns ALL sections (including selectionGroup members) for a legacy null/{} config, without group subtraction", () => {
+    expect(resolveActiveSections(groupSpec, null).map((s) => s.name).sort()).toEqual(
+      [...groupSpec.sections.map((s) => s.name)].sort(),
+    );
+    expect(
+      resolveActiveSections(groupSpec, { selectedSectionNames: [] }).map((s) => s.name).sort(),
+    ).toEqual([...groupSpec.sections.map((s) => s.name)].sort());
+  });
+
   it("narrows to the selected variant's sections", () => {
     const active = resolveActiveSections(variantSpec, {
       variantKey: "phys-math",

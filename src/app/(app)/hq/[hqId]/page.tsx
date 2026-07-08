@@ -10,6 +10,7 @@ import type { TestKind } from "@/features/tests/spec";
 import {
   buildKnowledgeMapSections,
   examDatePassed,
+  hasKnowledgeForActiveSections,
   isHqStale,
   parseTargetNumber,
   selectCurrentWeek,
@@ -73,13 +74,33 @@ export default async function HqDashboardPage({
   const lastRecomputedAt = hqRow.last_recomputed_at ? new Date(hqRow.last_recomputed_at) : null;
   const now = new Date();
 
-  // (2) knowledge_states по hq — плоское чтение, НЕ через KnowledgeRepo
-  // (та граница читает сырые attempt_items для write-пути пересчёта; здесь
-  // нужны уже посчитанные строки карты as-is).
-  const { data: stateRows } = await supabase
-    .from("knowledge_states")
-    .select("topic, level, answered_count, last_seen_at")
-    .eq("hq_id", hqId);
+  // (2)-(5) независимые запросы после hq-загрузки — Promise.all, семантика
+  // не меняется (каждый и так был read-only и ничей результат не зависел от
+  // другого до этого фикса; testIds ниже — единственная реальная
+  // зависимость, поэтому (5b)/(5c) остаются во ВТОРОМ Promise.all после
+  // hqTests, а не в этом же).
+  const [{ data: stateRows }, weeks, { data: forecastRow }, { data: hqTests }] = await Promise.all([
+    // (2) knowledge_states по hq — плоское чтение, НЕ через KnowledgeRepo
+    // (та граница читает сырые attempt_items для write-пути пересчёта; здесь
+    // нужны уже посчитанные строки карты as-is).
+    supabase.from("knowledge_states").select("topic, level, answered_count, last_seen_at").eq("hq_id", hqId),
+    // (3) plan weeks — переиспользуем PlanRepo.loadWeeks (уже делает
+    // safeParse на чтении, та же защита от битых строк).
+    supabasePlanRepo(supabase).loadWeeks(hqId),
+    // (4) latest forecast — прямой select (НЕ ForecastRepo.latest: та
+    // возвращает урезанный {point,low,high} только для внутреннего дедупа
+    // append(), дашборду нужны ещё confidence/coverage).
+    supabase
+      .from("forecasts")
+      .select("point, low, high, confidence, coverage")
+      .eq("hq_id", hqId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    // (5a) tests id-список hq — нужен ниже для (5b)/(5c) attempts-агрегатов.
+    supabase.from("tests").select("id").eq("hq_id", hqId),
+  ]);
+
   const states = new Map<string, TopicState>();
   for (const row of stateRows ?? []) {
     // Битая строка (last_seen_at отсутствует/невалиден, level не число) —
@@ -92,21 +113,8 @@ export default async function HqDashboardPage({
     states.set(row.topic, { level: row.level, answeredCount: row.answered_count, lastSeenAt });
   }
 
-  // (3) plan weeks — переиспользуем PlanRepo.loadWeeks (уже делает
-  // safeParse на чтении, та же защита от битых строк).
-  const weeks = await supabasePlanRepo(supabase).loadWeeks(hqId);
   const currentWeek = selectCurrentWeek(weeks, now);
 
-  // (4) latest forecast — прямой select (НЕ ForecastRepo.latest: та
-  // возвращает урезанный {point,low,high} только для внутреннего дедупа
-  // append(), дашборду нужны ещё confidence/coverage).
-  const { data: forecastRow } = await supabase
-    .from("forecasts")
-    .select("point, low, high, confidence, coverage")
-    .eq("hq_id", hqId)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
   const forecast: Forecast | null =
     forecastRow && forecastRow.point !== null
       ? {
@@ -118,37 +126,40 @@ export default async function HqDashboardPage({
         }
       : null;
 
-  // (5) лёгкий max(finished_at) + count завершённых попыток hq (tests →
-  // attempts), без единого item/task в выборке.
-  const { data: hqTests } = await supabase.from("tests").select("id").eq("hq_id", hqId);
+  // (5b)/(5c) лёгкий max(finished_at) + count завершённых попыток hq (tests →
+  // attempts), без единого item/task в выборке; независимы друг от друга —
+  // тоже Promise.all.
   const testIds = (hqTests ?? []).map((row) => row.id);
   let maxFinishedAt: Date | null = null;
   let finishedCount = 0;
   if (testIds.length > 0) {
-    const { data: latestFinished } = await supabase
-      .from("attempts")
-      .select("finished_at")
-      .in("test_id", testIds)
-      .not("finished_at", "is", null)
-      .order("finished_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const [{ data: latestFinished }, { count }] = await Promise.all([
+      supabase
+        .from("attempts")
+        .select("finished_at")
+        .in("test_id", testIds)
+        .not("finished_at", "is", null)
+        .order("finished_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      supabase
+        .from("attempts")
+        .select("id", { count: "exact", head: true })
+        .in("test_id", testIds)
+        .not("finished_at", "is", null),
+    ]);
     if (latestFinished?.finished_at) {
       const d = new Date(latestFinished.finished_at);
       if (Number.isFinite(d.getTime())) maxFinishedAt = d;
     }
-
-    const { count } = await supabase
-      .from("attempts")
-      .select("id", { count: "exact", head: true })
-      .in("test_id", testIds)
-      .not("finished_at", "is", null);
     finishedCount = count ?? 0;
   }
 
   const stale = isHqStale(maxFinishedAt, lastRecomputedAt);
   const mapSections = buildKnowledgeMapSections(activeSections, states, now);
-  const mapEmpty = states.size === 0;
+  // Backlog wave fix7: только строки knowledge_states, чьи topic ∈ активные
+  // секции, считаются за "есть данные" — см. hasKnowledgeForActiveSections.
+  const mapEmpty = !hasKnowledgeForActiveSections(activeSections, states);
 
   // Кнопка внизу берёт kind из suggestedTest текущей недели (всегда
   // 'practice'|'mock' — planWeekTopicsSchema), 'diagnostic' по умолчанию,

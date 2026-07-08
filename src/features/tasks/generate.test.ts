@@ -260,6 +260,31 @@ describe("generateForBucket", () => {
     );
   });
 
+  // Backlog wave fix3: a BudgetExceededError thrown on the RETRY call used
+  // to lose the first (already LLM-paid-for) batch entirely — it was never
+  // inserted because the function threw before reaching insertMany.
+  it("salvages the first batch into repo before rethrowing a BudgetExceededError from the retry call", async () => {
+    const budgetError = new Error("llm generation budget exceeded for this test assembly");
+    budgetError.name = "BudgetExceededError";
+    const firstBatch = [singleChoiceTask("Задание 1"), singleChoiceTask("Задание 2")]; // 2 valid, deficit 8
+    let call = 0;
+    const llm = {
+      complete: vi.fn(async () => {
+        call += 1;
+        if (call === 1) return firstBatch as never;
+        throw budgetError;
+      }),
+    };
+    const repo = fakeRepo();
+
+    await expect(generateForBucket({ llm, repo }, examSpec, "profile-1", bucket)).rejects.toThrow(
+      budgetError,
+    );
+
+    expect(repo.rows).toHaveLength(2);
+    expect(repo.rows.map((r) => r.body.prompt).sort()).toEqual(["Задание 1", "Задание 2"]);
+  });
+
   // D6: привязка к секции + audio-транскрипт enforcement.
   describe("D6 section anchoring + audio transcript", () => {
     it("anchors the prompt to the section name, section topics list, and a cross-section prohibition", async () => {

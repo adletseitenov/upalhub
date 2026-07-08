@@ -214,33 +214,22 @@ async function requestValidTasksUnsafe(
  * Если после первого батча валидных меньше bucket.count — ровно один
  * повторный запрос на дефицит; если и после него недобор — возвращается
  * то, что есть (graceful degrade, без throw).
+ *
+ * Backlog wave fix3: если РЕТРАЙ-вызов бросает BudgetExceededError, задания
+ * первого (уже оплаченного) батча вставляются в repo ДО rethrow — иначе они
+ * терялись молча (сгенерированы, но никогда не insertMany'ились).
  */
-export async function generateForBucket(
-  deps: { llm: Llm; repo: TaskBankRepo },
+// Бакет — источник истины для type/topic/difficulty (D2/D3): findBucket
+// ищет задания по точному совпадению этой тройки, поэтому сохраняем именно
+// bucket.difficulty, а не самоприписанную LLM difficulty элемента (та
+// существовала только чтобы заставить модель явно её обозначить).
+function toRows(
+  tasks: GenTask[],
+  bucket: Bucket,
   examSpec: ExamProfileSpec,
   examProfileId: string,
-  bucket: Bucket,
-): Promise<StoredTask[]> {
-  let valid = await requestValidTasks(deps.llm, firstBatchPrompt(examSpec, bucket), MAX_BATCH, bucket);
-
-  if (valid.length < bucket.count) {
-    const deficit = Math.min(MAX_BATCH, Math.max(1, bucket.count - valid.length));
-    const retryValid = await requestValidTasks(
-      deps.llm,
-      retryPrompt(examSpec, bucket, deficit),
-      deficit,
-      bucket,
-    );
-    valid = valid.concat(retryValid);
-  }
-
-  if (valid.length === 0) return [];
-
-  // Бакет — источник истины для type/topic/difficulty (D2/D3): findBucket
-  // ищет задания по точному совпадению этой тройки, поэтому сохраняем
-  // именно bucket.difficulty, а не самоприписанную LLM difficulty элемента
-  // (та существовала только чтобы заставить модель явно её обозначить).
-  const rows: NewTaskRow[] = valid.map((task) => ({
+): NewTaskRow[] {
+  return tasks.map((task) => ({
     type: bucket.type,
     topic: bucket.topic,
     difficulty: bucket.difficulty,
@@ -252,7 +241,43 @@ export async function generateForBucket(
     examProfileId,
     origin: "ai",
   }));
+}
 
-  const { inserted } = await deps.repo.insertMany(rows);
+export async function generateForBucket(
+  deps: { llm: Llm; repo: TaskBankRepo },
+  examSpec: ExamProfileSpec,
+  examProfileId: string,
+  bucket: Bucket,
+): Promise<StoredTask[]> {
+  let valid = await requestValidTasks(deps.llm, firstBatchPrompt(examSpec, bucket), MAX_BATCH, bucket);
+
+  if (valid.length < bucket.count) {
+    const deficit = Math.min(MAX_BATCH, Math.max(1, bucket.count - valid.length));
+    let retryValid: GenTask[];
+    try {
+      retryValid = await requestValidTasks(
+        deps.llm,
+        retryPrompt(examSpec, bucket, deficit),
+        deficit,
+        bucket,
+      );
+    } catch (err) {
+      // Backlog wave fix3: BudgetExceededError (assembly control signal,
+      // rethrown by requestValidTasks) aborts this function BEFORE the
+      // first (already LLM-paid-for) batch ever reached insertMany — those
+      // tasks were silently lost. Salvage: insert whatever the first batch
+      // produced, THEN rethrow so the caller (assembleTest) still sees the
+      // budget-exhausted signal.
+      if (err instanceof Error && err.name === "BudgetExceededError" && valid.length > 0) {
+        await deps.repo.insertMany(toRows(valid, bucket, examSpec, examProfileId));
+      }
+      throw err;
+    }
+    valid = valid.concat(retryValid);
+  }
+
+  if (valid.length === 0) return [];
+
+  const { inserted } = await deps.repo.insertMany(toRows(valid, bucket, examSpec, examProfileId));
   return inserted;
 }

@@ -8,10 +8,21 @@ function normalizeText(value: string, caseSensitive: boolean): string {
 
 // Поддержка десятичной запятой ("3,14" === "3.14"). Только первую запятую меняем
 // на точку — этого достаточно для одиночного десятичного разделителя.
+//
+// Backlog wave fix2: Number.parseFloat парсит ПРЕФИКС строки ("5abc" -> 5,
+// "5." -> 5) — мусорный хвост молча отбрасывался, и заведомо неверный ответ
+// вроде "5abc" грейдился как верный для number-задания. Строгий regex-гейт
+// перед Number(...) требует, чтобы ВСЯ строка (после запятая->точка) была
+// валидным числом — Number(normalized) сам по себе недостаточен (Number("")
+// === 0, но это уже отсечено выше; Number(" 5 ") === 5 — trim уже снял
+// пробелы), поэтому regex остаётся источником истины по форме.
+const STRICT_NUMBER_RE = /^-?\d+(\.\d+)?$/;
+
 function parseNumericInput(value: string): number | null {
   const normalized = value.trim().replace(",", ".");
   if (normalized === "") return null;
-  const n = Number.parseFloat(normalized);
+  if (!STRICT_NUMBER_RE.test(normalized)) return null;
+  const n = Number(normalized);
   return Number.isNaN(n) ? null : n;
 }
 

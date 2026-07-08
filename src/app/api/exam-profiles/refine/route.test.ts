@@ -75,4 +75,27 @@ describe("POST /api/exam-profiles/refine", () => {
     // раньше любых загрузок/LLM).
     expect(mockedRefineExamSpec).not.toHaveBeenCalled();
   });
+
+  // Backlog wave fix4: examProfileSpecSchema.parse() on a stale/corrupted
+  // row.spec used to throw -> unhandled 500. safeParse degrades to a clean
+  // 422 instead.
+  it("returns 422 profile_spec_invalid instead of throwing when row.spec fails schema validation", async () => {
+    const userId = "u-refine-invalid-spec";
+    const supabase = {
+      auth: { getUser: vi.fn().mockResolvedValue({ data: { user: { id: userId } } }) },
+      from: vi.fn(() =>
+        chainable({
+          data: { created_by: userId, spec: { garbage: true } },
+          error: null,
+        }),
+      ),
+    };
+    mockedSupabaseServer.mockResolvedValue(supabase as never);
+
+    const res = await POST(postRequest({ slug: "broken-spec", sampleText: "x".repeat(120) }));
+
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: "profile_spec_invalid" });
+    expect(mockedRefineExamSpec).not.toHaveBeenCalled();
+  });
 });

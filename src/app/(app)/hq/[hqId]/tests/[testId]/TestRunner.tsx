@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslations } from "next-intl";
 import { taskResponseSchema } from "@/features/tasks/schema";
 import type { TaskBody, TaskResponse } from "@/features/tasks/schema";
@@ -85,6 +85,29 @@ type StartOutcome =
   | { kind: "http_error" }
   | { kind: "exception" };
 
+function subscribeNoop() {
+  return () => {};
+}
+function getClientSnapshot() {
+  return true;
+}
+function getServerSnapshot() {
+  return false;
+}
+
+// Backlog wave fix10: same useSyncExternalStore mounted-gate as
+// AudioPassage.tsx (src/features/attempts/AudioPassage.tsx) — `now` seeds
+// via `new Date()` in a useState initializer (below), so the FIRST client
+// render (hydration) computes `remaining` from a different wall-clock
+// instant than the server did, producing a text mismatch for a resumed
+// attempt (deadlineAt already set from props). useSyncExternalStore's
+// getServerSnapshot=false matches the server render exactly; the client
+// only flips to true in a POST-hydration commit, avoiding the mismatch
+// (vs. useEffect+setState, which still paints a mismatched first frame).
+function useHasMounted(): boolean {
+  return useSyncExternalStore(subscribeNoop, getClientSnapshot, getServerSnapshot);
+}
+
 async function startOnce(testId: string): Promise<StartOutcome> {
   try {
     const res = await fetch("/api/attempts", {
@@ -119,6 +142,7 @@ export function TestRunner(props: TestRunnerProps) {
     responsesFromSaved(props.attempt?.savedItems ?? []),
   );
   const [now, setNow] = useState<Date>(() => new Date());
+  const mounted = useHasMounted();
   const [starting, setStarting] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [savingState, setSavingState] = useState<"idle" | "saving" | "saved">("idle");
@@ -347,7 +371,8 @@ export function TestRunner(props: TestRunnerProps) {
       <header className="flex items-center justify-between">
         {remaining !== null ? (
           <p className="text-sm">
-            {t("timeLeft")}: <span className="font-medium">{formatRemaining(remaining)}</span>
+            {t("timeLeft")}:{" "}
+            <span className="font-medium">{mounted ? formatRemaining(remaining) : "—:—"}</span>
           </p>
         ) : (
           <span />

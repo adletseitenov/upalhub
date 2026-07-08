@@ -59,7 +59,14 @@ export function supabasePlanRepo(client: SupabaseClient<Database>): PlanRepo {
       const { error: insertError } = await client
         .from("study_plan_weeks")
         .insert(rows as unknown as Database["public"]["Tables"]["study_plan_weeks"]["Insert"][]);
-      if (insertError) throw insertError;
+      // Backlog wave fix6: концурентный пересчёт того же hq (два write-пути
+      // — submit-хук и POST recompute — гонка между DELETE и INSERT двух
+      // одновременных вызовов) может привести к unique violation (23505 на
+      // (hq_id, week_start)) при INSERT. buildStudyPlan детерминирована
+      // (тот же вход -> тот же план), поэтому конкурент, выигравший гонку,
+      // уже записал СТРОКИ, идентичные по содержанию тем, что пытаемся
+      // вставить мы — тихо выходим вместо 500, а не задваиваем ошибку.
+      if (insertError && insertError.code !== "23505") throw insertError;
     },
 
     async loadWeeks(hqId) {

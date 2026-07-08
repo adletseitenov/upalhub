@@ -374,4 +374,41 @@ describe("supabase migrations", () => {
       await resetRole(db);
     }
   });
+
+  // --- Backlog wave: exam_profiles insert column-level security -----------
+
+  it("backlog wave: rejects an authenticated exam_profiles insert that sets trust='verified' directly", async () => {
+    const userId = await insertUser("bw-insert-trust@example.com");
+
+    await asRole(db, "authenticated", userId);
+    try {
+      await expect(
+        db.exec(`
+          insert into public.exam_profiles (slug, title, language, spec, origin, created_by, trust)
+          values ('bw-trust-verified', 'Trust Verified Test', 'ru', '{}'::jsonb, 'manual', '${userId}', 'verified')
+        `),
+      ).rejects.toThrow();
+    } finally {
+      await resetRole(db);
+    }
+  });
+
+  it("backlog wave: allows an authenticated exam_profiles insert without trust, defaulting to 'ai_draft'", async () => {
+    const userId = await insertUser("bw-insert-ok@example.com");
+
+    await asRole(db, "authenticated", userId);
+    try {
+      await db.exec(`
+        insert into public.exam_profiles (slug, title, language, spec, origin, created_by)
+        values ('bw-trust-default', 'Trust Default Test', 'ru', '{}'::jsonb, 'manual', '${userId}')
+      `);
+    } finally {
+      await resetRole(db);
+    }
+
+    const res = await db.query<{ trust: string }>(
+      `select trust from public.exam_profiles where slug = 'bw-trust-default'`,
+    );
+    expect(res.rows[0].trust).toBe("ai_draft");
+  });
 });

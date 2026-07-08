@@ -187,6 +187,32 @@ describe("gradeAnswer: text_input number", () => {
     const response: TaskResponse = { format: "text_input", value: "pi" };
     expect(gradeAnswer(body, answer, response)).toBe(false);
   });
+
+  // Backlog wave fix2: Number.parseFloat parses a numeric PREFIX ("5abc" ->
+  // 5), so trailing garbage after a valid number used to grade as correct.
+  it("rejects a numeric-looking response with trailing garbage ('5abc')", () => {
+    const answer: TaskAnswer = { format: "text_input", accepted: ["5"], caseSensitive: false };
+    const response: TaskResponse = { format: "text_input", value: "5abc" };
+    expect(gradeAnswer(body, answer, response)).toBe(false);
+  });
+
+  it("rejects a trailing decimal point with no digits after it ('5.')", () => {
+    const answer: TaskAnswer = { format: "text_input", accepted: ["5"], caseSensitive: false };
+    const response: TaskResponse = { format: "text_input", value: "5." };
+    expect(gradeAnswer(body, answer, response)).toBe(false);
+  });
+
+  it("rejects plain non-numeric text ('abc')", () => {
+    const answer: TaskAnswer = { format: "text_input", accepted: ["5"], caseSensitive: false };
+    const response: TaskResponse = { format: "text_input", value: "abc" };
+    expect(gradeAnswer(body, answer, response)).toBe(false);
+  });
+
+  it("still accepts a decimal-comma input surrounded by whitespace (' 5,5 ')", () => {
+    const answer: TaskAnswer = { format: "text_input", accepted: ["5.5"], caseSensitive: false };
+    const response: TaskResponse = { format: "text_input", value: " 5,5 " };
+    expect(gradeAnswer(body, answer, response)).toBe(true);
+  });
 });
 
 describe("gradeAnswer: format mismatch defensive behavior", () => {

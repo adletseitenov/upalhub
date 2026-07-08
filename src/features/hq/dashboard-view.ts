@@ -60,6 +60,26 @@ export function buildKnowledgeMapSections(
   }));
 }
 
+/**
+ * hasKnowledgeForActiveSections — Backlog wave fix7: page.tsx раньше считало
+ * mapEmpty как `states.size === 0`, учитывая ЛЮБУЮ строку knowledge_states
+ * независимо от того, принадлежит ли её topic активным секциям (hqConfig
+ * variant/selection). Смена варианта оставляет строки СТАРОГО варианта в
+ * базе — mapEmpty оставался false (CTA скрыт), хотя для реально активной
+ * карты знаний данных нет вообще. Считаем строку "живой" только если её
+ * topic входит в topicsOfSection хотя бы одной активной секции.
+ */
+export function hasKnowledgeForActiveSections(
+  activeSections: ExamSection[],
+  states: Map<string, TopicState>,
+): boolean {
+  const activeTopics = new Set(activeSections.flatMap((section) => topicsOfSection(section)));
+  for (const topic of states.keys()) {
+    if (activeTopics.has(topic)) return true;
+  }
+  return false;
+}
+
 // --- Watermark / stale-детект (D2/D7) ------------------------------------
 
 /**

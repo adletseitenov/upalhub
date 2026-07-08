@@ -112,6 +112,50 @@ export const examProfileSpecSchema = z
         });
       }
     });
+
+    // Backlog wave fix5: variants[].key / selectionGroups[].key are used as
+    // lookup keys (spec.variants.find(v => v.key === config.variantKey),
+    // and to identify a group in error messages/resolveActiveSections'
+    // group loop) — a duplicate key makes `.find` silently pick the FIRST
+    // match, hiding the other one. sectionNames WITHIN a single group must
+    // also be unique: resolveActiveSections/validateHqConfig both build
+    // `new Set(group.sectionNames)`-shaped pools, so a duplicate name would
+    // silently collapse without ever surfacing as a spec error.
+    const variantKeysSeen = new Set<string>();
+    spec.variants.forEach((variant, i) => {
+      if (variantKeysSeen.has(variant.key)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `Duplicate variant key: "${variant.key}"`,
+          path: ["variants", i, "key"],
+        });
+      }
+      variantKeysSeen.add(variant.key);
+    });
+
+    const groupKeysSeen = new Set<string>();
+    spec.selectionGroups.forEach((group, i) => {
+      if (groupKeysSeen.has(group.key)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `Duplicate selectionGroups key: "${group.key}"`,
+          path: ["selectionGroups", i, "key"],
+        });
+      }
+      groupKeysSeen.add(group.key);
+
+      const namesSeen = new Set<string>();
+      group.sectionNames.forEach((name, j) => {
+        if (namesSeen.has(name)) {
+          ctx.addIssue({
+            code: "custom",
+            message: `selectionGroups[${i}] ("${group.key}") has duplicate sectionNames: "${name}"`,
+            path: ["selectionGroups", i, "sectionNames", j],
+          });
+        }
+        namesSeen.add(name);
+      });
+    });
   });
 
 export type ExamProfileSpec = z.infer<typeof examProfileSpecSchema>;
