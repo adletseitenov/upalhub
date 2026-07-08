@@ -6,6 +6,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/supabase/server", () => ({
   supabaseServer: vi.fn(),
 }));
+// D-security1 fix: tasks-репо для сборки теста (банк читает answer/
+// explanation) получает service-role клиент, не supabaseServer() — мокается
+// отдельно (паттерн @/lib/supabase/server рядом).
+vi.mock("@/lib/supabase/admin", () => ({
+  supabaseAdmin: vi.fn(),
+}));
 vi.mock("@/lib/llm", () => ({
   createLlm: vi.fn(() => ({ complete: vi.fn() })),
 }));
@@ -20,11 +26,19 @@ vi.mock("@/features/tests/assemble", () => ({
 }));
 
 import { supabaseServer } from "@/lib/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
+import { supabaseTaskRepo } from "@/features/tasks/repo";
 import { assembleTest } from "@/features/tests/assemble";
 import { POST, maxDuration } from "./route";
 
 const mockedSupabaseServer = vi.mocked(supabaseServer);
+const mockedSupabaseAdmin = vi.mocked(supabaseAdmin);
+const mockedTaskRepoFactory = vi.mocked(supabaseTaskRepo);
 const mockedAssembleTest = vi.mocked(assembleTest);
+
+// Sentinel — доказывает, что supabaseTaskRepo() был вызван именно с
+// результатом supabaseAdmin(), а не с user-клиентом (fakeSupabase ниже).
+const ADMIN_CLIENT = { __tag: "admin-client" };
 
 // Валидный по RFC 9562 uuid — zod 4 z.uuid() проверяет version/variant-биты,
 // «все единицы» не проходят.
@@ -89,6 +103,7 @@ function validProfileRow() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockedSupabaseAdmin.mockReturnValue(ADMIN_CLIENT as never);
 });
 
 // ВАЖНО: rate limiter в route.ts — модульный синглтон, его состояние живёт
@@ -136,6 +151,7 @@ describe("POST /api/tests", () => {
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: "not_found" });
     expect(mockedAssembleTest).not.toHaveBeenCalled();
+    expect(mockedSupabaseAdmin).not.toHaveBeenCalled();
   });
 
   it("429s once the caller's token bucket (capacity 5) is exhausted", async () => {
@@ -186,6 +202,12 @@ describe("POST /api/tests", () => {
     // Shape-гарантия: ответ сборки не содержит ни заданий, ни ответов.
     expect(JSON.stringify(body)).not.toContain("answer");
     expect(mockedAssembleTest).toHaveBeenCalledTimes(1);
+
+    // D-security1 fix: банк заданий читается через service-role клиент
+    // (supabaseAdmin()), а не через user-клиент — authenticated не видит
+    // tasks.answer/explanation после миграции 20260709130000.
+    expect(mockedSupabaseAdmin).toHaveBeenCalledTimes(1);
+    expect(mockedTaskRepoFactory).toHaveBeenCalledWith(ADMIN_CLIENT);
   });
 
   it("exports maxDuration=60 for the long-running assembly path", () => {

@@ -10,6 +10,13 @@ import type { StoredTest } from "@/features/tests/repo";
 vi.mock("@/lib/supabase/server", () => ({
   supabaseServer: vi.fn(),
 }));
+// D-security1 fix: грейдинг-чтение tasks (submit-роут) идёт через
+// service-role клиент, не через supabaseServer() — мокается отдельно
+// (паттерн @/lib/supabase/server рядом), чтобы тесты могли отличить, каким
+// клиентом реально читались tasks.answer/explanation.
+vi.mock("@/lib/supabase/admin", () => ({
+  supabaseAdmin: vi.fn(),
+}));
 vi.mock("@/features/attempts/repo", () => ({
   supabaseAttemptRepo: vi.fn(),
 }));
@@ -22,6 +29,7 @@ vi.mock("@/features/attempts/service", () => ({
 }));
 
 import { supabaseServer } from "@/lib/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { supabaseAttemptRepo } from "@/features/attempts/repo";
 import { supabaseTestRepo } from "@/features/tests/repo";
 import { startAttempt, submitAttempt } from "@/features/attempts/service";
@@ -29,6 +37,7 @@ import { POST as startPOST } from "@/app/api/attempts/route";
 import { POST as submitPOST } from "@/app/api/attempts/[id]/submit/route";
 
 const mockedSupabaseServer = vi.mocked(supabaseServer);
+const mockedSupabaseAdmin = vi.mocked(supabaseAdmin);
 const mockedAttemptRepo = vi.mocked(supabaseAttemptRepo);
 const mockedTestRepo = vi.mocked(supabaseTestRepo);
 const mockedStartAttempt = vi.mocked(startAttempt);
@@ -93,14 +102,9 @@ function chainable(result: QueryResult) {
   return builder;
 }
 
-function fakeSupabase(opts: {
-  user: { id: string } | null;
-  studyHq?: QueryResult;
-  tasks?: QueryResult;
-}) {
+function fakeSupabase(opts: { user: { id: string } | null; studyHq?: QueryResult }) {
   const tables: Record<string, QueryResult> = {
     study_hqs: opts.studyHq ?? { data: null, error: null },
-    tasks: opts.tasks ?? { data: [], error: null },
   };
   return {
     auth: { getUser: vi.fn().mockResolvedValue({ data: { user: opts.user } }) },
@@ -108,8 +112,22 @@ function fakeSupabase(opts: {
   };
 }
 
-function stubSupabase(opts: { user: { id: string } | null; studyHq?: QueryResult; tasks?: QueryResult }) {
+function stubSupabase(opts: { user: { id: string } | null; studyHq?: QueryResult }) {
   mockedSupabaseServer.mockResolvedValue(fakeSupabase(opts) as never);
+}
+
+// D-security1 fix: tasks.answer/explanation читаются ТОЛЬКО через
+// supabaseAdmin() (submit-роут) — отдельный fake-клиент + spy на .from,
+// чтобы тесты могли доказать, что грейдинг-чтение прошло именно через
+// admin-мок, а не через user-клиент (fakeSupabase выше tasks больше не
+// обслуживает).
+function stubAdminSupabase(opts: { tasks?: QueryResult } = {}) {
+  const tables: Record<string, QueryResult> = {
+    tasks: opts.tasks ?? { data: [], error: null },
+  };
+  const from = vi.fn((table: string) => chainable(tables[table] ?? { data: null, error: null }));
+  mockedSupabaseAdmin.mockReturnValue({ from } as never);
+  return { from };
 }
 
 function stubTestRepo(test: StoredTest | null) {
@@ -216,6 +234,7 @@ describe("POST /api/attempts/[id]/submit", () => {
 
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: "unauthorized" });
+    expect(mockedSupabaseAdmin).not.toHaveBeenCalled();
   });
 
   it("404s when the attempt does not exist", async () => {
@@ -227,6 +246,7 @@ describe("POST /api/attempts/[id]/submit", () => {
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: "not_found" });
     expect(mockedSubmitAttempt).not.toHaveBeenCalled();
+    expect(mockedSupabaseAdmin).not.toHaveBeenCalled();
   });
 
   it("403s (forbidden) on someone else's existing attempt, before submitAttempt is ever invoked", async () => {
@@ -240,10 +260,14 @@ describe("POST /api/attempts/[id]/submit", () => {
     // Ownership-гейт живёт в роуте (требование ревью T5) — сервис,
     // единственный код, который видит tasks.answer, не должен был вызываться.
     expect(mockedSubmitAttempt).not.toHaveBeenCalled();
+    // Service-role клиент (D-security1 fix) читает tasks ТОЛЬКО после
+    // ownership-гейта — форбидден-путь не должен был его создавать.
+    expect(mockedSupabaseAdmin).not.toHaveBeenCalled();
   });
 
   it("200s with {raw, scaled, total, alreadyFinished} shape and no answer leak", async () => {
-    stubSupabase({ user: { id: "user-1" }, tasks: { data: [], error: null } });
+    stubSupabase({ user: { id: "user-1" } });
+    const admin = stubAdminSupabase({ tasks: { data: [], error: null } });
     stubAttemptRepo(attemptFixture({ userId: "user-1" }));
     stubTestRepo(testFixture());
     mockedSubmitAttempt.mockResolvedValue({ raw: 1, scaled: 70, total: 2, alreadyFinished: false });
@@ -263,10 +287,17 @@ describe("POST /api/attempts/[id]/submit", () => {
     expect(args.userId).toBe("user-1");
     expect(args.test.id).toBe(TEST_ID);
     expect(args.now).toBeInstanceOf(Date);
+
+    // D-security1 fix: грейдинг-чтение tasks идёт через service-role клиент
+    // (admin-мок), не через user-клиент (roль authenticated не видит
+    // answer/explanation после миграции 20260709130000).
+    expect(mockedSupabaseAdmin).toHaveBeenCalledTimes(1);
+    expect(admin.from).toHaveBeenCalledWith("tasks");
   });
 
   it("a resubmit of an already-finished attempt returns alreadyFinished: true", async () => {
-    stubSupabase({ user: { id: "user-1" }, tasks: { data: [], error: null } });
+    stubSupabase({ user: { id: "user-1" } });
+    stubAdminSupabase({ tasks: { data: [], error: null } });
     stubAttemptRepo(attemptFixture({ userId: "user-1", finishedAt: new Date("2026-07-07T11:00:00Z") }));
     stubTestRepo(testFixture());
     mockedSubmitAttempt.mockResolvedValue({ raw: 1, scaled: 70, total: 2, alreadyFinished: true });

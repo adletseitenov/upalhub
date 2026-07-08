@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { supabaseServer } from "@/lib/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { createLlm } from "@/lib/llm";
 import { examProfileSpecSchema, sourceRefSchema } from "@/features/exam-profile/spec";
 import type { StoredExamProfile } from "@/features/exam-profile/service";
@@ -92,8 +93,12 @@ export async function POST(_request: Request, { params }: { params: Promise<{ te
     }
   }
 
+  // Тот же паттерн, что и /api/tests: hq/test/exam_profiles уже провладены
+  // выше на user-клиенте; таск-репо для дособорки — на service-role (банк
+  // читает answer/explanation, которые authenticated больше не видит после
+  // миграции 20260709130000).
   const newSpec = await reassembleTest(
-    { taskRepo: supabaseTaskRepo(supabase), llm: createLlm() },
+    { taskRepo: supabaseTaskRepo(supabaseAdmin()), llm: createLlm() },
     { test, examProfile, hqConfig },
   );
 

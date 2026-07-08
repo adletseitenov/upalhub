@@ -8,6 +8,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/supabase/server", () => ({
   supabaseServer: vi.fn(),
 }));
+// D-security1 fix: tasks-репо для дособорки (банк читает answer/
+// explanation) получает service-role клиент, не supabaseServer() — мокается
+// отдельно (паттерн @/lib/supabase/server рядом).
+vi.mock("@/lib/supabase/admin", () => ({
+  supabaseAdmin: vi.fn(),
+}));
 vi.mock("@/lib/llm", () => ({
   createLlm: vi.fn(() => ({ complete: vi.fn() })),
 }));
@@ -22,15 +28,23 @@ vi.mock("@/features/tests/assemble", () => ({
 }));
 
 import { supabaseServer } from "@/lib/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { supabaseTestRepo } from "@/features/tests/repo";
 import type { StoredTest, TestRepo } from "@/features/tests/repo";
+import { supabaseTaskRepo } from "@/features/tasks/repo";
 import { reassembleTest } from "@/features/tests/assemble";
 import type { TestSpec } from "@/features/tests/spec";
 import { POST, maxDuration } from "./route";
 
 const mockedSupabaseServer = vi.mocked(supabaseServer);
+const mockedSupabaseAdmin = vi.mocked(supabaseAdmin);
 const mockedTestRepoFactory = vi.mocked(supabaseTestRepo);
+const mockedTaskRepoFactory = vi.mocked(supabaseTaskRepo);
 const mockedReassembleTest = vi.mocked(reassembleTest);
+
+// Sentinel — доказывает, что supabaseTaskRepo() был вызван именно с
+// результатом supabaseAdmin(), а не с user-клиентом (fakeSupabase ниже).
+const ADMIN_CLIENT = { __tag: "admin-client" };
 
 // Валидный по RFC 9562 uuid — zod 4 z.uuid() проверяет version/variant-биты.
 const TEST_ID = "22222222-2222-4222-8222-222222222222";
@@ -125,6 +139,7 @@ function mockTestRepo(overrides: Partial<TestRepo> = {}): TestRepo {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockedSupabaseAdmin.mockReturnValue(ADMIN_CLIENT as never);
 });
 
 describe("POST /api/tests/[testId]/refill", () => {
@@ -146,6 +161,7 @@ describe("POST /api/tests/[testId]/refill", () => {
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: "not_found" });
     expect(mockedReassembleTest).not.toHaveBeenCalled();
+    expect(mockedSupabaseAdmin).not.toHaveBeenCalled();
   });
 
   it("404s when the test's hq does not belong to (or does not exist for) the caller", async () => {
@@ -246,6 +262,11 @@ describe("POST /api/tests/[testId]/refill", () => {
     expect(body).toEqual({ taskCount: 2, previousTaskCount: 1 });
     expect(JSON.stringify(body)).not.toContain("answer");
     expect(repo.replaceTestSpecIfNoAttempts).toHaveBeenCalledWith(TEST_ID, newSpec);
+
+    // D-security1 fix: банк заданий для дособорки читается через
+    // service-role клиент (supabaseAdmin()), не через user-клиент.
+    expect(mockedSupabaseAdmin).toHaveBeenCalledTimes(1);
+    expect(mockedTaskRepoFactory).toHaveBeenCalledWith(ADMIN_CLIENT);
   });
 
   it("exports maxDuration=60 for the long-running reassembly path", () => {

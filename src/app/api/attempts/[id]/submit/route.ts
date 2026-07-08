@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { supabaseAttemptRepo } from "@/features/attempts/repo";
 import { supabaseTestRepo } from "@/features/tests/repo";
 import { submitAttempt } from "@/features/attempts/service";
@@ -62,7 +63,10 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
   const test = await supabaseTestRepo(supabase).getTest(attempt.testId);
   if (!test) return NextResponse.json({ error: "not_found" }, { status: 404 });
 
-  const { data: taskRows, error: tasksError } = await supabase
+  // Ownership уже подтверждён выше (userId сверен на user-клиенте) — только
+  // ПОСЛЕ этого читаем tasks.answer/explanation через service-role клиент:
+  // после миграции 20260709130000 роль authenticated эти колонки не видит.
+  const { data: taskRows, error: tasksError } = await supabaseAdmin()
     .from("tasks")
     .select("*")
     .in("id", test.spec.taskIds);

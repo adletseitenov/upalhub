@@ -1,3 +1,9 @@
+-- ПРИМЕНЯТЬ только после деплоя кода с supabaseAdmin (src/lib/supabase/admin.ts)
+-- И добавления SUPABASE_SECRET_KEY в Vercel env — иначе грейдинг/сборка тестов
+-- сломаются (весь серверный код работает через supabaseServer(), anon key +
+-- сессия = роль authenticated, у которой после этой миграции нет select на
+-- tasks.answer/tasks.explanation).
+--
 -- D-security1 (mega-review wave): tasks readable using(true) — намеренно
 -- (банк общий), но Supabase-платформа даёт anon/authenticated SELECT на ВСЕ
 -- колонки таблицы по умолчанию (как и exam_profiles до миграции

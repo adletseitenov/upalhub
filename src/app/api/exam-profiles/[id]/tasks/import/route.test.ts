@@ -6,6 +6,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/supabase/server", () => ({
   supabaseServer: vi.fn(),
 }));
+// D-security1 fix: insertMany-путь (insert + .select("*").single() читает
+// answer/explanation обратно) идёт через service-role клиент — мокается
+// отдельно (паттерн @/lib/supabase/server рядом).
+vi.mock("@/lib/supabase/admin", () => ({
+  supabaseAdmin: vi.fn(),
+}));
 // contentHash (real sha256) стаётся настоящим — import.ts импортирует его из
 // того же модуля; мокается только supabaseTaskRepo-фабрика.
 vi.mock("@/features/tasks/repo", async (importOriginal) => {
@@ -14,11 +20,17 @@ vi.mock("@/features/tasks/repo", async (importOriginal) => {
 });
 
 import { supabaseServer } from "@/lib/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { supabaseTaskRepo } from "@/features/tasks/repo";
 import { POST } from "./route";
 
 const mockedSupabaseServer = vi.mocked(supabaseServer);
+const mockedSupabaseAdmin = vi.mocked(supabaseAdmin);
 const mockedTaskRepo = vi.mocked(supabaseTaskRepo);
+
+// Sentinel — доказывает, что supabaseTaskRepo() был вызван именно с
+// результатом supabaseAdmin(), а не с user-клиентом (stubSupabase ниже).
+const ADMIN_CLIENT = { __tag: "admin-client" };
 
 // Валидный по RFC 9562 uuid — паттерн src/app/api/tests/route.test.ts.
 const PROFILE_ID = "11111111-1111-4111-8111-111111111111";
@@ -102,6 +114,7 @@ const params = { params: Promise.resolve({ id: PROFILE_ID }) };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockedSupabaseAdmin.mockReturnValue(ADMIN_CLIENT as never);
 });
 
 describe("POST /api/exam-profiles/[id]/tasks/import", () => {
@@ -144,6 +157,9 @@ describe("POST /api/exam-profiles/[id]/tasks/import", () => {
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: "forbidden" });
     expect(insertMany).not.toHaveBeenCalled();
+    // Creator-гейт живёт до admin-клиента — форбидден-путь не должен был
+    // его создавать (D-security1 fix).
+    expect(mockedSupabaseAdmin).not.toHaveBeenCalled();
   });
 
   it("400s a fully invalid array, reporting index + message per element", async () => {
@@ -189,6 +205,11 @@ describe("POST /api/exam-profiles/[id]/tasks/import", () => {
     const rows = insertMany.mock.calls[0][0] as Array<{ origin: string; examProfileId: string }>;
     expect(rows).toHaveLength(2);
     expect(rows.every((r) => r.origin === "import" && r.examProfileId === PROFILE_ID)).toBe(true);
+
+    // D-security1 fix: insertMany пишет через service-role клиент
+    // (supabaseAdmin()), не через user-клиент.
+    expect(mockedSupabaseAdmin).toHaveBeenCalledTimes(1);
+    expect(mockedTaskRepo).toHaveBeenCalledWith(ADMIN_CLIENT);
   });
 
   it("re-importing the same file: repo reports duplicates via skipped, and skippedDuplicates reflects it", async () => {
