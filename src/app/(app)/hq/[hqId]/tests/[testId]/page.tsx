@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import { supabaseServer } from "@/lib/supabase/server";
@@ -27,9 +28,12 @@ export default async function TestPage({
   const { data: userData } = await supabase.auth.getUser();
   if (!userData.user) notFound();
 
+  // Hotfix: exam_profiles(title) добавлен, чтобы над тестом было видно, КАКОЙ
+  // это экзамен (юзер путал штабы разных экзаменов) — лёгкий select, join уже
+  // есть в FK study_hqs.exam_profile_id.
   const { data: hq } = await supabase
     .from("study_hqs")
-    .select("id, exam_profile_id")
+    .select("id, exam_profile_id, exam_profiles(title)")
     .eq("id", hqId)
     .eq("user_id", userData.user.id)
     .maybeSingle();
@@ -219,6 +223,14 @@ export default async function TestPage({
 
   return (
     <>
+      {/* Hotfix: над тестом — какой это экзамен (юзер путал IELTS-штаб с
+          SAT) + хлебная ссылка назад в дашборд штаба. */}
+      <div className="mx-auto flex max-w-2xl flex-col gap-1 p-6 pb-0">
+        <Link href={`/hq/${hqId}`} className="text-sm text-gray-500 underline">
+          {t("backToDashboard")}
+        </Link>
+        <p className="text-sm font-medium text-gray-600">{hq.exam_profiles?.title}</p>
+      </div>
       {partial && !attemptExists && (
         <div className="mx-auto flex max-w-2xl flex-col items-start gap-2 rounded border border-amber-300 bg-amber-50 p-4 mt-6">
           <p className="text-sm text-amber-800">

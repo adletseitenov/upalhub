@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import { supabaseServer } from "@/lib/supabase/server";
@@ -61,6 +62,9 @@ export default async function HqDashboardPage({
   if (!profile || !parsedSpec?.success) {
     return (
       <main className="mx-auto flex max-w-2xl flex-col gap-4 p-6">
+        <Link href="/hq" className="text-sm text-gray-500 underline">
+          {t("backToHq")}
+        </Link>
         <h1 className="text-xl font-semibold">{profile?.title ?? "—"}</h1>
         <p className="text-sm text-red-600">{t("specBroken")}</p>
       </main>
@@ -175,6 +179,10 @@ export default async function HqDashboardPage({
 
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-6 p-6">
+      {/* Hotfix: хлебная ссылка назад к списку штабов (/hq). */}
+      <Link href="/hq" className="-mb-2 text-sm text-gray-500 underline">
+        {t("backToHq")}
+      </Link>
       <h1 className="text-xl font-semibold">{profile.title}</h1>
 
       <ForecastCard forecast={forecast} target={target} unit={spec.scoring.unit} finishedCount={finishedCount} />
