@@ -475,6 +475,7 @@ export type Database = {
       }
       study_hqs: {
         Row: {
+          approach: Json | null // stage5: manual until regen
           config: Json
           created_at: string
           exam_date: string | null
@@ -486,6 +487,7 @@ export type Database = {
           user_id: string
         }
         Insert: {
+          approach?: Json | null // stage5: manual until regen
           config?: Json
           created_at?: string
           exam_date?: string | null
@@ -497,6 +499,7 @@ export type Database = {
           user_id: string
         }
         Update: {
+          approach?: Json | null // stage5: manual until regen
           config?: Json
           created_at?: string
           exam_date?: string | null

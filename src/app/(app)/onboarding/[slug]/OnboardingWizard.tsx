@@ -6,10 +6,18 @@ import type { ExamVariant, SelectionGroup } from "@/features/exam-profile/spec";
 import {
   defaultConfig,
   reconcileDraft,
+  reconcileWeakSections,
+  resolveActiveSectionNames,
   selectionPools,
   type OnboardingStep,
   type SelectionPoolEntry,
 } from "@/features/onboarding/steps";
+import {
+  APPROACH_LEVELS,
+  EXPLANATION_STYLES,
+  HOURS_PER_WEEK,
+  type InterviewButtons,
+} from "@/features/interview/approach";
 
 export type OnboardingSectionSummary = { name: string; taskCount: number | null };
 
@@ -36,13 +44,89 @@ export type OnboardingWizardProps = {
   scoring: OnboardingScoring;
 };
 
+// D1 (Stage 5, Task 2): the interview step's open-answer fields — both
+// optional/skippable, stored as raw strings ("" = not entered, matches the
+// "Пропустить" affordance clearing them rather than tracking a separate
+// skipped flag).
+type InterviewOpenDraft = { concern: string; motivation: string };
+
+const DEFAULT_INTERVIEW_BUTTONS: InterviewButtons = {
+  level: "intermediate",
+  hoursPerWeek: "3-6",
+  weakSections: [],
+  explanationStyle: "concise",
+};
+const DEFAULT_INTERVIEW_OPEN: InterviewOpenDraft = { concern: "", motivation: "" };
+
+// Явные карты значение -> ключ локали (вместо конкатенации строк в t(...)) —
+// проще для статического анализа/поиска использований ключа, чем
+// динамический `t(\`interviewLevel${level}\`)`.
+const LEVEL_LABEL_KEYS: Record<(typeof APPROACH_LEVELS)[number], string> = {
+  beginner: "interviewLevelBeginner",
+  intermediate: "interviewLevelIntermediate",
+  confident: "interviewLevelConfident",
+};
+const HOURS_LABEL_KEYS: Record<(typeof HOURS_PER_WEEK)[number], string> = {
+  "<3": "interviewHoursLow",
+  "3-6": "interviewHoursMid",
+  "7+": "interviewHoursHigh",
+};
+const STYLE_LABEL_KEYS: Record<(typeof EXPLANATION_STYLES)[number], string> = {
+  concise: "interviewStyleConcise",
+  detailed: "interviewStyleDetailed",
+};
+
 type Draft = {
   variantKey: string | null;
   selected: string[];
   examDate: string | null | "skipped";
   // D6 (Task 8): raw text typed on the goal step; null = not entered (skip).
   target: string | null;
+  // D1 (Stage 5, Task 2): interview step state — always present after
+  // loadDraft normalizes (defaults for older drafts that predate this step).
+  interviewButtons: InterviewButtons;
+  interviewOpen: InterviewOpenDraft;
 };
+
+function isApproachLevel(v: unknown): v is (typeof APPROACH_LEVELS)[number] {
+  return typeof v === "string" && (APPROACH_LEVELS as readonly string[]).includes(v);
+}
+function isHoursPerWeek(v: unknown): v is (typeof HOURS_PER_WEEK)[number] {
+  return typeof v === "string" && (HOURS_PER_WEEK as readonly string[]).includes(v);
+}
+function isExplanationStyle(v: unknown): v is (typeof EXPLANATION_STYLES)[number] {
+  return typeof v === "string" && (EXPLANATION_STYLES as readonly string[]).includes(v);
+}
+
+// Defensive parsing (no zod here, matching this file's existing loadDraft
+// style) — a draft saved before Stage 5 Task 2 shipped has no
+// interviewButtons/interviewOpen keys at all; a corrupted/hand-edited
+// localStorage value can have the wrong shape entirely. Both degrade to the
+// sensible defaults above rather than throwing (loadDraft as a whole must
+// never crash the wizard on a bad draft).
+function parseInterviewButtons(raw: unknown): InterviewButtons {
+  if (raw === null || typeof raw !== "object") return DEFAULT_INTERVIEW_BUTTONS;
+  const r = raw as Partial<Record<keyof InterviewButtons, unknown>>;
+  return {
+    level: isApproachLevel(r.level) ? r.level : DEFAULT_INTERVIEW_BUTTONS.level,
+    hoursPerWeek: isHoursPerWeek(r.hoursPerWeek) ? r.hoursPerWeek : DEFAULT_INTERVIEW_BUTTONS.hoursPerWeek,
+    weakSections: Array.isArray(r.weakSections)
+      ? r.weakSections.filter((s): s is string => typeof s === "string")
+      : [],
+    explanationStyle: isExplanationStyle(r.explanationStyle)
+      ? r.explanationStyle
+      : DEFAULT_INTERVIEW_BUTTONS.explanationStyle,
+  };
+}
+
+function parseInterviewOpen(raw: unknown): InterviewOpenDraft {
+  if (raw === null || typeof raw !== "object") return DEFAULT_INTERVIEW_OPEN;
+  const r = raw as Partial<InterviewOpenDraft>;
+  return {
+    concern: typeof r.concern === "string" ? r.concern : "",
+    motivation: typeof r.motivation === "string" ? r.motivation : "",
+  };
+}
 
 // D1 🔴 localStorage-черновик: ключ onboarding:<slug>, восстановление
 // исключительно через lazy useState initializer (SSR-безопасно —
@@ -68,7 +152,9 @@ function loadDraft(slug: string): Draft | null {
         ? parsed.examDate
         : null;
     const target = typeof parsed.target === "string" ? parsed.target : null;
-    return { variantKey, selected, examDate, target };
+    const interviewButtons = parseInterviewButtons(parsed.interviewButtons);
+    const interviewOpen = parseInterviewOpen(parsed.interviewOpen);
+    return { variantKey, selected, examDate, target, interviewButtons, interviewOpen };
   } catch {
     return null;
   }
@@ -126,7 +212,7 @@ async function rerollOnce(
 }
 
 type FinishOutcome =
-  | { kind: "success" }
+  | { kind: "success"; hqId: string }
   | { kind: "invalid_config" }
   | { kind: "unauthorized" }
   | { kind: "error" };
@@ -152,9 +238,31 @@ async function finishOnce(
     if (res.status === 401) return { kind: "unauthorized" };
     if (res.status === 422) return { kind: "invalid_config" };
     if (!res.ok) return { kind: "error" };
-    return { kind: "success" };
+    const data = (await res.json()) as { id: string };
+    return { kind: "success", hqId: data.id };
   } catch {
     return { kind: "error" };
+  }
+}
+
+// D1 (Stage 5, Task 2): интервью-обогащение — ВСЕГДА вызывается после
+// успешного finishOnce, но best-effort: провал (сеть/429/5xx) НЕ блокирует
+// переход в /hq — approach просто остаётся DEFAULT_APPROACH (записан
+// INSERT-веткой /api/study-hqs, Stage5 Task1), юзер ничего не теряет кроме
+// персонализации. Исход намеренно не различается вызывающей стороной.
+async function interviewOnce(
+  hqId: string,
+  buttons: InterviewButtons,
+  openAnswers: { concern?: string; motivation?: string },
+): Promise<void> {
+  try {
+    await fetch("/api/interview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hqId, buttons, openAnswers }),
+    });
+  } catch {
+    // best-effort — провал этого шага не должен ничего блокировать
   }
 }
 
@@ -168,6 +276,22 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
   const t = useTranslations("onboarding");
 
   const specForPools = { variants: props.variants, selectionGroups: props.selectionGroups };
+  const allSectionNames = props.sections.map((s) => s.name);
+
+  // D1 (Stage 5, Task 2): "активные секции" для пула weakSections на
+  // интервью-шаге — ДОЛЖНЫ совпадать с тем, что /api/interview резолвит
+  // server-side (resolveActiveSections против variantKey+
+  // effectiveSelectedNames, которые сам визард отправит в /api/study-hqs
+  // прямо перед /api/interview), иначе клиент предложит выбор, который
+  // роут отклонит 400 invalid_weak_sections. Пересчитывается заново из
+  // аргументов (а не из текущего render-состояния) — безопасно вызывать с
+  // ЕЩЁ НЕ применённым (следующим) variantKey/selected, см.
+  // selectVariant/toggleSection ниже.
+  function activeSectionNamesFor(variantKeyArg: string | null, selectedArg: Set<string>): string[] {
+    const poolsArg = selectionPools(specForPools, variantKeyArg);
+    const effective = effectiveSelectedNames(poolsArg, selectedArg);
+    return resolveActiveSectionNames(specForPools, allSectionNames, variantKeyArg, new Set(effective));
+  }
 
   // D-important5: a draft persisted from a PRIOR onboarding session for this
   // slug can reference section names / a variantKey the CURRENT spec no
@@ -184,10 +308,23 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
     // whose scoring scale differs — reconcile against the CURRENT scale, or
     // an out-of-range prefill would silently disable "Далее" on the goal
     // step with no obvious reason.
-    return reconcileDraft(raw, validSectionNames, validVariantKeys, {
+    const reconciled = reconcileDraft(raw, validSectionNames, validVariantKeys, {
       min: props.scoring.scaleMin,
       max: props.scoring.scaleMax,
     });
+    // 🔴 D1: weakSections реконсилятся вперёд против АКТИВНЫХ секций под уже
+    // реконсиленным variantKey/selected — черновик, сохранённый до смены
+    // варианта/выбора (или до spec refine), может ссылаться на секцию, что
+    // больше не активна; тот же риск лока, что и в reconcileDraft (jsdoc
+    // выше), применённый к weakSections интервью-шага.
+    const names = activeSectionNamesFor(reconciled.variantKey, new Set(reconciled.selected));
+    return {
+      ...reconciled,
+      interviewButtons: {
+        ...reconciled.interviewButtons,
+        weakSections: reconcileWeakSections(reconciled.interviewButtons.weakSections, names),
+      },
+    };
   }
 
   const [stepIndex, setStepIndex] = useState(0);
@@ -201,6 +338,12 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
     () => loadReconciledDraft()?.examDate ?? null,
   );
   const [target, setTarget] = useState<string | null>(() => loadReconciledDraft()?.target ?? null);
+  const [interviewButtons, setInterviewButtons] = useState<InterviewButtons>(
+    () => loadReconciledDraft()?.interviewButtons ?? DEFAULT_INTERVIEW_BUTTONS,
+  );
+  const [interviewOpen, setInterviewOpen] = useState<InterviewOpenDraft>(
+    () => loadReconciledDraft()?.interviewOpen ?? DEFAULT_INTERVIEW_OPEN,
+  );
   const [busy, setBusy] = useState(false);
   const [researching, setResearching] = useState(false);
   const [rerollOpen, setRerollOpen] = useState(false);
@@ -213,6 +356,9 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
     const count = p.pool.filter((n) => selected.has(n)).length;
     return count === p.group.chooseCount;
   });
+  // D1 (Stage 5, Task 2): пул выбора для weakSections на интервью-шаге —
+  // текущие variantKey/selected этого рендера.
+  const activeSectionNamesForInterview = activeSectionNamesFor(variantKey, selected);
 
   // D6 (Task 8): пустое поле — можно идти дальше/пропустить без target;
   // непустое, но вне [scaleMin, scaleMax] (или нечисловое) — блокирует
@@ -234,7 +380,21 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
 
   function selectVariant(key: string) {
     setVariantKey(key);
-    saveDraft(props.slug, { variantKey: key, selected: Array.from(selected), examDate, target });
+    // 🔴 D1: смена варианта в рамках сессии реконсилит weakSections ВПЕРЁД
+    // против активных секций ПОД НОВЫМ вариантом — иначе ранее отмеченная
+    // слабая секция могла бы больше не входить в активный набор и позже
+    // словить 400 invalid_weak_sections от /api/interview.
+    const names = activeSectionNamesFor(key, selected);
+    const nextButtons = { ...interviewButtons, weakSections: reconcileWeakSections(interviewButtons.weakSections, names) };
+    setInterviewButtons(nextButtons);
+    saveDraft(props.slug, {
+      variantKey: key,
+      selected: Array.from(selected),
+      examDate,
+      target,
+      interviewButtons: nextButtons,
+      interviewOpen,
+    });
   }
 
   function toggleSection(name: string, poolEntry: SelectionPoolEntry) {
@@ -248,24 +408,66 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
       next.add(name);
     }
     setSelected(next);
-    saveDraft(props.slug, { variantKey, selected: Array.from(next), examDate, target });
+    // 🔴 D1: то же форвард-реконсилирование weakSections, что и в
+    // selectVariant — смена selectionGroup-выбора тоже может сузить активный
+    // набор секций.
+    const names = activeSectionNamesFor(variantKey, next);
+    const nextButtons = { ...interviewButtons, weakSections: reconcileWeakSections(interviewButtons.weakSections, names) };
+    setInterviewButtons(nextButtons);
+    saveDraft(props.slug, {
+      variantKey,
+      selected: Array.from(next),
+      examDate,
+      target,
+      interviewButtons: nextButtons,
+      interviewOpen,
+    });
   }
 
   function onExamDateChange(value: string) {
     const next = value === "" ? null : value;
     setExamDate(next);
-    saveDraft(props.slug, { variantKey, selected: Array.from(selected), examDate: next, target });
+    saveDraft(props.slug, { variantKey, selected: Array.from(selected), examDate: next, target, interviewButtons, interviewOpen });
   }
 
   function onTargetChange(value: string) {
     const next = value === "" ? null : value;
     setTarget(next);
-    saveDraft(props.slug, { variantKey, selected: Array.from(selected), examDate, target: next });
+    saveDraft(props.slug, { variantKey, selected: Array.from(selected), examDate, target: next, interviewButtons, interviewOpen });
   }
 
   function skipGoal() {
     setTarget(null);
-    saveDraft(props.slug, { variantKey, selected: Array.from(selected), examDate, target: null });
+    saveDraft(props.slug, { variantKey, selected: Array.from(selected), examDate, target: null, interviewButtons, interviewOpen });
+    goNext();
+  }
+
+  function setInterviewButtonField<K extends keyof InterviewButtons>(key: K, value: InterviewButtons[K]) {
+    const next = { ...interviewButtons, [key]: value };
+    setInterviewButtons(next);
+    saveDraft(props.slug, { variantKey, selected: Array.from(selected), examDate, target, interviewButtons: next, interviewOpen });
+  }
+
+  function toggleWeakSection(name: string) {
+    const has = interviewButtons.weakSections.includes(name);
+    const nextWeak = has
+      ? interviewButtons.weakSections.filter((n) => n !== name)
+      : [...interviewButtons.weakSections, name];
+    const next = { ...interviewButtons, weakSections: nextWeak };
+    setInterviewButtons(next);
+    saveDraft(props.slug, { variantKey, selected: Array.from(selected), examDate, target, interviewButtons: next, interviewOpen });
+  }
+
+  function onInterviewOpenChange(field: keyof InterviewOpenDraft, value: string) {
+    const next = { ...interviewOpen, [field]: value };
+    setInterviewOpen(next);
+    saveDraft(props.slug, { variantKey, selected: Array.from(selected), examDate, target, interviewButtons, interviewOpen: next });
+  }
+
+  function skipInterviewOpen() {
+    const next = DEFAULT_INTERVIEW_OPEN;
+    setInterviewOpen(next);
+    saveDraft(props.slug, { variantKey, selected: Array.from(selected), examDate, target, interviewButtons, interviewOpen: next });
     goNext();
   }
 
@@ -307,6 +509,13 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
     const targetValue = target !== null && target.trim() !== "" ? target : undefined;
     const outcome = await finishOnce(props.profileId, config, examDateValue, targetValue);
     if (outcome.kind === "success") {
+      // D1 (Stage 5, Task 2): интервью-обогащение ПОСЛЕ успешного создания/
+      // обновления штаба — best-effort, провал НЕ блокирует переход в /hq
+      // (approach останется DEFAULT_APPROACH, см. interviewOnce jsdoc).
+      const openAnswers: { concern?: string; motivation?: string } = {};
+      if (interviewOpen.concern.trim() !== "") openAnswers.concern = interviewOpen.concern.trim();
+      if (interviewOpen.motivation.trim() !== "") openAnswers.motivation = interviewOpen.motivation.trim();
+      await interviewOnce(outcome.hqId, interviewButtons, openAnswers);
       clearDraft(props.slug);
       router.replace("/hq"); // 🔴 replace, не push
       return;
@@ -514,6 +723,114 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
         </div>
       )}
 
+      {step.kind === "interview" && (
+        <div className="flex flex-col gap-4">
+          <h2 className="font-semibold">{t("interviewTitle")}</h2>
+
+          <div className="flex flex-col gap-2">
+            <p className="font-medium">{t("interviewLevelLabel")}</p>
+            {APPROACH_LEVELS.map((level) => (
+              <label key={level} className="flex items-center gap-2 rounded border p-3">
+                <input
+                  type="radio"
+                  name="interview-level"
+                  checked={interviewButtons.level === level}
+                  onChange={() => setInterviewButtonField("level", level)}
+                />
+                <span>{t(LEVEL_LABEL_KEYS[level])}</span>
+              </label>
+            ))}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <p className="font-medium">{t("interviewHoursLabel")}</p>
+            {HOURS_PER_WEEK.map((hours) => (
+              <label key={hours} className="flex items-center gap-2 rounded border p-3">
+                <input
+                  type="radio"
+                  name="interview-hours"
+                  checked={interviewButtons.hoursPerWeek === hours}
+                  onChange={() => setInterviewButtonField("hoursPerWeek", hours)}
+                />
+                <span>{t(HOURS_LABEL_KEYS[hours])}</span>
+              </label>
+            ))}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <p className="font-medium">{t("interviewWeakLabel")}</p>
+            {activeSectionNamesForInterview.length > 0 ? (
+              <div className="flex flex-col gap-2">
+                {activeSectionNamesForInterview.map((name) => (
+                  <label key={name} className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={interviewButtons.weakSections.includes(name)}
+                      onChange={() => toggleWeakSection(name)}
+                    />
+                    <span>{name}</span>
+                  </label>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-500">{t("interviewWeakHint")}</p>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <p className="font-medium">{t("interviewStyleLabel")}</p>
+            {EXPLANATION_STYLES.map((style) => (
+              <label key={style} className="flex items-center gap-2 rounded border p-3">
+                <input
+                  type="radio"
+                  name="interview-style"
+                  checked={interviewButtons.explanationStyle === style}
+                  onChange={() => setInterviewButtonField("explanationStyle", style)}
+                />
+                <span>{t(STYLE_LABEL_KEYS[style])}</span>
+              </label>
+            ))}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <label className="text-sm text-gray-600" htmlFor="interview-concern">
+              {t("interviewConcernLabel")}
+            </label>
+            <textarea
+              id="interview-concern"
+              className="min-h-20 rounded border p-3"
+              placeholder={t("interviewConcernPlaceholder")}
+              value={interviewOpen.concern}
+              onChange={(e) => onInterviewOpenChange("concern", e.target.value)}
+            />
+          </div>
+          <div className="flex flex-col gap-2">
+            <label className="text-sm text-gray-600" htmlFor="interview-motivation">
+              {t("interviewMotivationLabel")}
+            </label>
+            <textarea
+              id="interview-motivation"
+              className="min-h-20 rounded border p-3"
+              placeholder={t("interviewMotivationPlaceholder")}
+              value={interviewOpen.motivation}
+              onChange={(e) => onInterviewOpenChange("motivation", e.target.value)}
+            />
+          </div>
+
+          <div className="flex gap-3">
+            <button type="button" onClick={goBack} className="rounded border px-4 py-2 text-sm">
+              ←
+            </button>
+            <button type="button" onClick={goNext} className="rounded border px-6 py-3 font-medium">
+              →
+            </button>
+            <button type="button" onClick={skipInterviewOpen} className="rounded border px-4 py-2 text-sm">
+              {t("interviewOpenSkip")}
+            </button>
+          </div>
+        </div>
+      )}
+
       {step.kind === "date" && (
         <div className="flex flex-col gap-4">
           <h2 className="font-semibold">{t("dateTitle")}</h2>
@@ -544,6 +861,8 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
                   selected: Array.from(selected),
                   examDate: "skipped",
                   target,
+                  interviewButtons,
+                  interviewOpen,
                 });
                 void handleFinish("skipped");
               }}

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { examProfileSpecSchema, type ExamProfileSpec } from "@/features/exam-profile/spec";
-import { buildOnboardingSteps, defaultConfig, reconcileDraft, selectionPools } from "./steps";
+import {
+  buildOnboardingSteps,
+  defaultConfig,
+  reconcileDraft,
+  reconcileWeakSections,
+  resolveActiveSectionNames,
+  selectionPools,
+} from "./steps";
 
 const baseFields = {
   language: "en",
@@ -68,39 +75,43 @@ const degradedSpec: ExamProfileSpec = examProfileSpecSchema.parse({
   selectionGroups: [{ key: "g", title: "G", chooseCount: 2, sectionNames: ["B", "C"] }],
 });
 
-describe("buildOnboardingSteps (D1/D6)", () => {
-  it("IELTS-подобная плоская спека -> confirm + goal + date", () => {
+describe("buildOnboardingSteps (D1/D6, D1 Stage5-Task2: +interview)", () => {
+  it("IELTS-подобная плоская спека -> confirm + goal + interview + date", () => {
     expect(buildOnboardingSteps(ieltsLikeSpec)).toEqual([
       { kind: "confirm" },
       { kind: "goal" },
+      { kind: "interview" },
       { kind: "date" },
     ]);
   });
 
-  it("вариантная спека -> confirm + goal + variant + date", () => {
+  it("вариантная спека -> confirm + goal + variant + interview + date", () => {
     expect(buildOnboardingSteps(variantSpec)).toEqual([
       { kind: "confirm" },
       { kind: "goal" },
       { kind: "variant" },
+      { kind: "interview" },
       { kind: "date" },
     ]);
   });
 
-  it("выбираемая спека (без variants) -> confirm + goal + selection + date", () => {
+  it("выбираемая спека (без variants) -> confirm + goal + selection + interview + date", () => {
     expect(buildOnboardingSteps(selectableSpec)).toEqual([
       { kind: "confirm" },
       { kind: "goal" },
       { kind: "selection" },
+      { kind: "interview" },
       { kind: "date" },
     ]);
   });
 
-  it("спека с variants И selectionGroups -> confirm + goal + variant + selection + date", () => {
+  it("спека с variants И selectionGroups -> confirm + goal + variant + selection + interview + date", () => {
     expect(buildOnboardingSteps(degradedSpec)).toEqual([
       { kind: "confirm" },
       { kind: "goal" },
       { kind: "variant" },
       { kind: "selection" },
+      { kind: "interview" },
       { kind: "date" },
     ]);
   });
@@ -110,6 +121,25 @@ describe("buildOnboardingSteps (D1/D6)", () => {
       const steps = buildOnboardingSteps(spec);
       expect(steps[0]).toEqual({ kind: "confirm" });
       expect(steps[1]).toEqual({ kind: "goal" });
+    }
+  });
+
+  // 🔴 D1 (Stage 5, Task 2): interview всегда идёт ПОСЛЕ variant/selection
+  // (когда они есть) и ВСЕГДА непосредственно ПЕРЕД date — для ЛЮБОЙ формы
+  // спеки (interview не условен на spec.variants/selectionGroups, в отличие
+  // от них).
+  it("🔴 interview идёт сразу перед date и после variant/selection для всех форм спек", () => {
+    for (const spec of [ieltsLikeSpec, variantSpec, selectableSpec, degradedSpec]) {
+      const steps = buildOnboardingSteps(spec);
+      const interviewIndex = steps.findIndex((s) => s.kind === "interview");
+      const dateIndex = steps.findIndex((s) => s.kind === "date");
+      expect(interviewIndex).toBeGreaterThan(-1);
+      expect(dateIndex).toBe(steps.length - 1);
+      expect(interviewIndex).toBe(dateIndex - 1);
+      const variantIndex = steps.findIndex((s) => s.kind === "variant");
+      const selectionIndex = steps.findIndex((s) => s.kind === "selection");
+      if (variantIndex > -1) expect(interviewIndex).toBeGreaterThan(variantIndex);
+      if (selectionIndex > -1) expect(interviewIndex).toBeGreaterThan(selectionIndex);
     }
   });
 });
@@ -242,5 +272,91 @@ describe("reconcileDraft (D-important5)", () => {
       const draft = { variantKey: null, selected: [], target: null };
       expect(reconcileDraft(draft, validSectionNames, validVariantKeys, targetRange).target).toBeNull();
     });
+  });
+});
+
+// D1 (Stage 5, Task 2): name-only client mirror of resolveActiveSections
+// (exam-profile/selection.ts) — same fixtures/scenarios as
+// selection.test.ts, adapted to operate on plain name arrays/sets.
+describe("resolveActiveSectionNames (D1, Stage 5 Task 2)", () => {
+  const allIeltsNames = ["Listening", "Reading", "Writing", "Speaking"];
+  const allVariantNames = ["Математика", "Физика", "Химия"];
+  const allSelectableNames = ["Математика", "Английский", "Немецкий"];
+  const allDegradedNames = ["A", "B", "C"];
+
+  it("плоская спека, config null/{} (нет variantKey И ничего не выбрано) -> ВСЕ секции", () => {
+    expect(resolveActiveSectionNames(ieltsLikeSpec, allIeltsNames, null, new Set())).toEqual(allIeltsNames);
+  });
+
+  it("вариантная спека, variantKey выбран -> база сужена до sectionNames варианта", () => {
+    expect(resolveActiveSectionNames(variantSpec, allVariantNames, "phys-math", new Set())).toEqual([
+      "Математика",
+      "Физика",
+    ]);
+  });
+
+  it("неизвестный variantKey -> база = все секции (устаревший config не роняет)", () => {
+    expect(resolveActiveSectionNames(variantSpec, allVariantNames, "ghost", new Set())).toEqual(allVariantNames);
+  });
+
+  it("selectionGroup: пул непуст -> только выбранные из пула входят в результат", () => {
+    expect(
+      resolveActiveSectionNames(selectableSpec, allSelectableNames, null, new Set(["Английский"])),
+    ).toEqual(["Математика", "Английский"]);
+  });
+
+  it("selectionGroup: ничего не выбрано -> члены пула отсутствуют в результате", () => {
+    // non-null (пусть и несуществующий) variantKey — обходит backlog wave
+    // fix1 ранний выход ("truly empty config" -> ВСЕ секции без вычитания
+    // группы), тот же приём, что и у "нет выбранного варианта" в
+    // selection.test.ts (variantKey указан, просто не находится в spec.variants).
+    expect(resolveActiveSectionNames(selectableSpec, allSelectableNames, "no-variants-in-this-spec", new Set())).toEqual([
+      "Математика",
+    ]);
+  });
+
+  it("деградированная группа (пул < chooseCount под вариантом) -> выбранный член пула добавляется", () => {
+    expect(
+      resolveActiveSectionNames(degradedSpec, allDegradedNames, "v1", new Set(["B"])),
+    ).toEqual(["A", "B"]);
+  });
+
+  it("ортогональная группа (пул пуст относительно варианта) -> выбранный член добавляется в базу", () => {
+    // variant v1 = ["A","B"]; group g = ["B","C"] пересекается с базой (B
+    // общий) -> НЕ ортогональна в этой фикстуре; используем вариант без
+    // пересечения вовсе, чтобы проверить orthogonal-ветку явно.
+    const orthSpec = { variants: [{ key: "v2", label: "V2", sectionNames: ["A"] }], selectionGroups: degradedSpec.selectionGroups };
+    expect(resolveActiveSectionNames(orthSpec, allDegradedNames, "v2", new Set(["C"]))).toEqual(["A", "C"]);
+  });
+});
+
+describe("reconcileWeakSections (D1 🔴, Stage 5 Task 2)", () => {
+  it("keeps weakSections that are still active", () => {
+    expect(reconcileWeakSections(["Математика", "Физика"], ["Математика", "Физика", "Химия"])).toEqual([
+      "Математика",
+      "Физика",
+    ]);
+  });
+
+  it("🔴 drops a weakSection no longer among the active sections", () => {
+    expect(reconcileWeakSections(["Математика", "Немецкий"], ["Математика", "Английский"])).toEqual([
+      "Математика",
+    ]);
+  });
+
+  it("drops everything when none of the weakSections are active anymore (lockout-style)", () => {
+    expect(reconcileWeakSections(["Немецкий"], ["Математика", "Английский"])).toEqual([]);
+  });
+
+  it("empty weakSections stays empty", () => {
+    expect(reconcileWeakSections([], ["Математика"])).toEqual([]);
+  });
+
+  it("does not mutate its inputs", () => {
+    const weak = ["Математика"];
+    const active = ["Математика"];
+    reconcileWeakSections(weak, active);
+    expect(weak).toEqual(["Математика"]);
+    expect(active).toEqual(["Математика"]);
   });
 });
