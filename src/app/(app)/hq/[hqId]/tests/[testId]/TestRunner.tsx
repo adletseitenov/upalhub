@@ -8,7 +8,11 @@ import { formatRemaining, isExpired, remainingMs } from "@/features/attempts/tim
 import { AudioPassage } from "@/features/attempts/AudioPassage";
 import { ResultView } from "./ResultView";
 
-type SectionSpec = { name: string; taskIds: string[]; modality?: "text" | "audio" | null };
+// D6 (Stage5 Task1): sectionModalitySchema widened to include "speaking" —
+// this local literal type must widen to match (mechanical, zero behavior
+// change here: only `=== "audio"` is checked below; "speaking" sections
+// render the same as "text" until Task 7/8 add speaking UI).
+type SectionSpec = { name: string; taskIds: string[]; modality?: "text" | "audio" | "speaking" | null };
 type TaskItem = { id: string; body: TaskBody };
 type SavedItem = { taskId: string; response: unknown };
 type InitialAttempt = {

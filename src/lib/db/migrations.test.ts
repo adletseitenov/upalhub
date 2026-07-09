@@ -69,6 +69,8 @@ const EXPECTED_TABLES = [
   "forecasts",
   "subscriptions",
   "parent_reports",
+  // Stage 5 Task 1 (D7):
+  "topic_explanations",
 ];
 
 describe("supabase migrations", () => {
@@ -411,4 +413,193 @@ describe("supabase migrations", () => {
     );
     expect(res.rows[0].trust).toBe("ai_draft");
   });
+
+  // --- Stage 5 Task 1 (D7 фундамент) -----------------------------------------
+
+  it("adds study_hqs.approach jsonb (defaults null) and rejects a non-object value via the CHECK constraint", async () => {
+    const userId = await insertUser("s5t1-approach@example.com");
+    const profileId = await insertProfile("s5t1-approach-test");
+
+    const hq = await db.query<{ id: string; approach: unknown }>(
+      `insert into public.study_hqs (user_id, exam_profile_id) values ('${userId}', '${profileId}') returning id, approach`,
+    );
+    expect(hq.rows[0].approach).toBeNull();
+    const hqId = hq.rows[0].id;
+
+    await db.exec(
+      `update public.study_hqs set approach = '{"level":"средний"}'::jsonb where id = '${hqId}'`,
+    );
+    const updated = await db.query<{ approach: unknown }>(
+      `select approach from public.study_hqs where id = '${hqId}'`,
+    );
+    expect(updated.rows[0].approach).toEqual({ level: "средний" });
+
+    await expect(
+      db.exec(`update public.study_hqs set approach = '[1,2,3]'::jsonb where id = '${hqId}'`),
+    ).rejects.toThrow();
+  });
+
+  it("creates topic_explanations with the readable/insert-by-hq-owner/delete-by-hq-owner policies", async () => {
+    const res = await db.query<{ polname: string; polcmd: string }>(
+      `select p.polname, p.polcmd from pg_policy p
+       join pg_class c on c.oid = p.polrelid
+       where c.relname = 'topic_explanations'`,
+    );
+    const names = res.rows.map((r) => r.polname).sort();
+    expect(names).toEqual(
+      [
+        "topic explanations readable",
+        "topic explanations insert by hq owner",
+        "topic explanations delete by hq owner",
+      ].sort(),
+    );
+  });
+
+  it("topic_explanations: hq owner can insert, another authenticated user cannot; anyone can select; only the owner can delete", async () => {
+    const ownerId = await insertUser("s5t1-topicex-owner@example.com");
+    const strangerId = await insertUser("s5t1-topicex-stranger@example.com");
+    const profileId = await insertProfile("s5t1-topicex-test");
+    await db.exec(
+      `insert into public.study_hqs (user_id, exam_profile_id) values ('${ownerId}', '${profileId}')`,
+    );
+
+    await asRole(db, "authenticated", strangerId);
+    try {
+      await expect(
+        db.exec(`
+          insert into public.topic_explanations (exam_profile_id, topic, locale, body)
+          values ('${profileId}', 'Algebra', 'ru', '{"text":"x"}'::jsonb)
+        `),
+      ).rejects.toThrow();
+    } finally {
+      await resetRole(db);
+    }
+
+    await asRole(db, "authenticated", ownerId);
+    try {
+      await db.exec(`
+        insert into public.topic_explanations (exam_profile_id, topic, locale, body)
+        values ('${profileId}', 'Algebra', 'ru', '{"text":"x"}'::jsonb)
+      `);
+    } finally {
+      await resetRole(db);
+    }
+
+    await asRole(db, "anon", null);
+    try {
+      const readRes = await db.query<{ topic: string }>(
+        `select topic from public.topic_explanations where exam_profile_id = '${profileId}'`,
+      );
+      expect(readRes.rows).toEqual([{ topic: "Algebra" }]);
+    } finally {
+      await resetRole(db);
+    }
+
+    await asRole(db, "authenticated", strangerId);
+    try {
+      await db.exec(
+        `delete from public.topic_explanations where exam_profile_id = '${profileId}' and topic = 'Algebra'`,
+      );
+      const stillThere = await db.query<{ topic: string }>(
+        `select topic from public.topic_explanations where exam_profile_id = '${profileId}'`,
+      );
+      expect(stillThere.rows).toHaveLength(1); // stranger's DELETE affected 0 rows (RLS filters it out)
+    } finally {
+      await resetRole(db);
+    }
+
+    await asRole(db, "authenticated", ownerId);
+    try {
+      await db.exec(
+        `delete from public.topic_explanations where exam_profile_id = '${profileId}' and topic = 'Algebra'`,
+      );
+      const gone = await db.query<{ topic: string }>(
+        `select topic from public.topic_explanations where exam_profile_id = '${profileId}'`,
+      );
+      expect(gone.rows).toHaveLength(0);
+    } finally {
+      await resetRole(db);
+    }
+  });
+
+  it("topic_explanations rejects a non-object body via the CHECK constraint", async () => {
+    const userId = await insertUser("s5t1-topicex-check@example.com");
+    const profileId = await insertProfile("s5t1-topicex-check-test");
+    await db.exec(
+      `insert into public.study_hqs (user_id, exam_profile_id) values ('${userId}', '${profileId}')`,
+    );
+
+    await expect(
+      db.exec(`
+        insert into public.topic_explanations (exam_profile_id, topic, locale, body)
+        values ('${profileId}', 'Algebra', 'ru', '[1,2]'::jsonb)
+      `),
+    ).rejects.toThrow();
+  });
+
+  it("topic_explanations enforces unique(exam_profile_id, topic, locale)", async () => {
+    const userId = await insertUser("s5t1-topicex-unique@example.com");
+    const profileId = await insertProfile("s5t1-topicex-unique-test");
+    await db.exec(
+      `insert into public.study_hqs (user_id, exam_profile_id) values ('${userId}', '${profileId}')`,
+    );
+    await db.exec(`
+      insert into public.topic_explanations (exam_profile_id, topic, locale, body)
+      values ('${profileId}', 'Algebra', 'ru', '{"text":"x"}'::jsonb)
+    `);
+
+    await expect(
+      db.exec(`
+        insert into public.topic_explanations (exam_profile_id, topic, locale, body)
+        values ('${profileId}', 'Algebra', 'ru', '{"text":"y"}'::jsonb)
+      `),
+    ).rejects.toThrow();
+  });
+
+  it("adds attempt_items.score/feedback and rejects a non-object feedback via the CHECK constraint", async () => {
+    const userId = await insertUser("s5t1-attemptitems@example.com");
+    const profileId = await insertProfile("s5t1-attemptitems-test");
+    const hq = await db.query<{ id: string }>(
+      `insert into public.study_hqs (user_id, exam_profile_id) values ('${userId}', '${profileId}') returning id`,
+    );
+    const test = await db.query<{ id: string }>(
+      `insert into public.tests (hq_id, kind, spec) values ('${hq.rows[0].id}', 'practice', '{}'::jsonb) returning id`,
+    );
+    const attempt = await db.query<{ id: string }>(
+      `insert into public.attempts (test_id, user_id) values ('${test.rows[0].id}', '${userId}') returning id`,
+    );
+    const task = await db.query<{ id: string }>(
+      `insert into public.tasks (exam_profile_id, type, topic, difficulty, language, body, answer, explanation, origin)
+       values ('${profileId}', 'speaking', 'topic-a', 1, 'ru', '{}'::jsonb, '{}'::jsonb, null, 'ai')
+       returning id`,
+    );
+
+    await db.exec(`
+      insert into public.attempt_items (attempt_id, task_id, score, feedback)
+      values ('${attempt.rows[0].id}', '${task.rows[0].id}', 4.5, '{"note":"ok"}'::jsonb)
+    `);
+    const row = await db.query<{ score: string }>(
+      `select score from public.attempt_items where attempt_id = '${attempt.rows[0].id}'`,
+    );
+    expect(row.rows[0].score).toBe("4.5");
+
+    await expect(
+      db.exec(`
+        update public.attempt_items set feedback = '[1,2]'::jsonb
+        where attempt_id = '${attempt.rows[0].id}' and task_id = '${task.rows[0].id}'
+      `),
+    ).rejects.toThrow();
+  });
+
+  // D7: приватный Storage-бакет speaking-recordings + owner-only RLS
+  // (storage.buckets/storage.objects) применяется в migration 20260710120100
+  // внутри guarded DO-блока (`if exists (...information_schema.tables where
+  // table_schema='storage'...)`). PGlite — чистый Postgres без Supabase
+  // storage-расширения, поэтому этот блок здесь всегда no-op и бакет НЕ
+  // создаётся локально; проверить его существование можно только против
+  // реальной Supabase-платформы (Storage tab в Studio / Management API)
+  // после применения миграции контроллером. RLS-политики самой таблицы
+  // attempt_items (owner via attempts.user_id, "own attempt items" policy,
+  // core_schema.sql) и topic_explanations (тесты выше) покрыты обязательно.
+  it.skip("creates the speaking-recordings storage bucket with owner-only policies (skipped: PGlite has no storage schema — verify against Supabase Studio/Management API post-deploy)", () => {});
 });

@@ -101,9 +101,17 @@ describe("hasKnowledgeForActiveSections", () => {
 // --- isHqStale ---------------------------------------------------------------
 
 describe("isHqStale", () => {
-  it("is not stale when no attempt has ever finished (maxFinishedAt null)", () => {
-    expect(isHqStale(null, null)).toBe(false);
+  it("is not stale when no attempt has ever finished but recompute already ran (watermark set)", () => {
     expect(isHqStale(null, NOW)).toBe(false);
+  });
+
+  // 🔴 D7 (Stage5 Task1) regression: lastRecomputedAt===null is stale
+  // UNCONDITIONALLY, even at zero attempts — backstop for a fresh hq whose
+  // INSERT-path recompute failed (study-hqs/route.ts best-effort try/catch).
+  // Before this fix maxFinishedAt===null short-circuited to false and the
+  // kicker never mounted, leaving the hq uncomputed forever.
+  it("is stale when last_recomputed_at is null, even with zero finished attempts", () => {
+    expect(isHqStale(null, null)).toBe(true);
   });
 
   it("is stale when there is a finished attempt but recompute never ran", () => {

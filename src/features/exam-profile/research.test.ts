@@ -68,7 +68,14 @@ const ieltsSpec = {
     { name: "Listening", modality: "audio" },
     { name: "Reading" },
     { name: "Writing" },
-    { name: "Speaking" },
+    {
+      name: "Speaking",
+      modality: "speaking",
+      speakingCriteria: [
+        { key: "fluency", label: "Fluency and coherence", maxPoints: 9 },
+        { key: "pronunciation", label: "Pronunciation", maxPoints: 9 },
+      ],
+    },
   ],
   variants: [],
   scoring: { scaleMin: 0, scaleMax: 9, unit: "band" },
@@ -156,6 +163,18 @@ describe("researchExam", () => {
     expect(listening?.modality).toBe("audio");
   });
 
+  // D6 (Stage5 Task1): speaking modality + optional speakingCriteria.
+  it("preserves speaking modality and speakingCriteria for an IELTS-like Speaking section", async () => {
+    const deps = { llm: fakeLlm([ieltsSpec]), search: fakeSearch(results, {}) };
+    const { spec } = await researchExam(deps, "IELTS");
+    const speaking = spec.sections.find((s) => s.name === "Speaking");
+    expect(speaking?.modality).toBe("speaking");
+    expect(speaking?.speakingCriteria).toEqual([
+      { key: "fluency", label: "Fluency and coherence", maxPoints: 9 },
+      { key: "pronunciation", label: "Pronunciation", maxPoints: 9 },
+    ]);
+  });
+
   it("prompts the model to extract variants, selectionGroups, and modality", async () => {
     const { llm, calls } = spyLlm(specFixture);
     const deps = { llm, search: fakeSearch(results, {}) };
@@ -166,6 +185,8 @@ describe("researchExam", () => {
     expect(sent).toMatch(/modality/);
     expect(sent).toMatch(/chooseCount/);
     expect(sent).toMatch(/audio/);
+    expect(sent).toMatch(/speaking/);
+    expect(sent).toMatch(/speakingCriteria/);
   });
 
   it("includes an avoid line in the prompt when opts.avoid is provided", async () => {

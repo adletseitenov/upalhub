@@ -125,6 +125,55 @@ describe("examProfileSpecSchema", () => {
     ).toThrow();
   });
 
+  // D6 (Stage5 Task1): "speaking" modality + optional speakingCriteria.
+  it("accepts modality: speaking on a section", () => {
+    const spec = examProfileSpecSchema.parse({
+      ...valid,
+      sections: [{ ...valid.sections[0], modality: "speaking" }],
+    });
+    expect(spec.sections[0].modality).toBe("speaking");
+  });
+  it("defaults speakingCriteria to undefined (old specs parse unchanged)", () => {
+    const spec = examProfileSpecSchema.parse({
+      ...valid,
+      sections: [{ ...valid.sections[0], modality: "speaking" }],
+    });
+    expect(spec.sections[0].speakingCriteria).toBeUndefined();
+  });
+  it("accepts speakingCriteria on a speaking section", () => {
+    const spec = examProfileSpecSchema.parse({
+      ...valid,
+      sections: [
+        {
+          ...valid.sections[0],
+          modality: "speaking",
+          speakingCriteria: [
+            { key: "fluency", label: "Беглость", maxPoints: 5 },
+            { key: "pronunciation", label: "Произношение", maxPoints: 5 },
+          ],
+        },
+      ],
+    });
+    expect(spec.sections[0].speakingCriteria).toEqual([
+      { key: "fluency", label: "Беглость", maxPoints: 5 },
+      { key: "pronunciation", label: "Произношение", maxPoints: 5 },
+    ]);
+  });
+  it("rejects a speakingCriteria entry with non-positive maxPoints", () => {
+    expect(() =>
+      examProfileSpecSchema.parse({
+        ...valid,
+        sections: [
+          {
+            ...valid.sections[0],
+            modality: "speaking",
+            speakingCriteria: [{ key: "fluency", label: "Беглость", maxPoints: 0 }],
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
   // D2/D4: variants + selectionGroups (mega-спека).
   it("accepts a mega spec with variants and selectionGroups, defaulting them to [] when absent", () => {
     const mega = examProfileSpecSchema.parse(megaValid);

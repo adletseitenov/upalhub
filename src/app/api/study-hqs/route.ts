@@ -168,5 +168,30 @@ export async function POST(request: Request) {
     }
     throw error;
   }
+
+  // 🔴 D7 (Stage5 Task1, critical-фикс): INSERT-ветка тоже best-effort зовёт
+  // recomputeHqInsights — раньше только UPDATE-ветка пересчитывала, значит
+  // свежесозданный штаб оставался пустым воркспейсом до первой попытки/до
+  // отдельного POST /api/interview (Task2). Штаб рождается уже
+  // пересчитанным (DEFAULT_APPROACH, пока интервью не заполнило approach) —
+  // /api/interview становится чисто аддитивным обогащением поверх, а не
+  // единственным источником первого пересчёта. Тот же паттерн try/catch, что
+  // и в UPDATE-ветке выше: сбой пересчёта НЕ должен ронять уже успешный
+  // INSERT/ответ клиенту (backstop: isHqStale в dashboard-view.ts всё равно
+  // подхватит last_recomputed_at===null и покажет RecomputeKicker).
+  try {
+    await recomputeHqInsights(
+      {
+        hqReader: supabaseHqReader(supabase),
+        knowledgeRepo: supabaseKnowledgeRepo(supabase),
+        planRepo: supabasePlanRepo(supabase),
+        forecastRepo: supabaseForecastRepo(supabase),
+      },
+      { hqId: created.id, now: new Date() },
+    );
+  } catch (err) {
+    console.warn(`study-hqs: recompute failed for hq=${created.id}`, err);
+  }
+
   return NextResponse.json({ id: created.id, existed: false });
 }

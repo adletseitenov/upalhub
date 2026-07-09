@@ -20,7 +20,12 @@ sectionNames бери строго из имён sections[].name; секции, 
 перечисляй в каждом из них. Если экзамен требует выбрать N предметов/секций из M — опиши
 это в selectionGroups[] с полем chooseCount. Если экзамен одновариантный и без выбора —
 оставь variants и selectionGroups пустыми массивами. Поле modality у секции ставь "audio"
-ТОЛЬКО для секций аудирования (Listening и т.п.), для остальных — "text" или null.`;
+ТОЛЬКО для секций аудирования (Listening и т.п.), "speaking" ТОЛЬКО для секций устной речи
+/говорения (Speaking и т.п.), для остальных — "text" или null. Для секции с modality
+"speaking" можешь опционально указать speakingCriteria — короткий список критериев оценки
+устной части {key, label, maxPoints}, ЕСЛИ они явно видны в материалах (например: fluency,
+coherence, vocabulary, grammar, pronunciation); если критерии неизвестны — не указывай
+speakingCriteria вовсе, не выдумывай числа maxPoints.`;
 
 function buildAvoidLine(avoid?: { name: string; country?: string | null }): string {
   if (!avoid) return "";
@@ -50,7 +55,11 @@ ${context}
     "timeLimitMinutes": лимит времени секции в минутах или null,
     "taskTypes": ["типы заданий"],
     "topics": ["основные темы"],
-    "modality": "audio" (только для секций аудирования/listening) или "text" или null
+    "modality": "audio" (только для секций аудирования/listening) или "speaking" (только
+      для секций устной речи/говорения) или "text" или null,
+    "speakingCriteria": [{"key": "fluency", "label": "название критерия", "maxPoints": число}]
+      — ТОЛЬКО для modality "speaking", если критерии оценки явно известны; иначе не
+      указывай это поле вовсе
   }],
   "variants": [{
     "key": "короткий идентификатор варианта",

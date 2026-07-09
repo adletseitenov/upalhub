@@ -3,8 +3,24 @@ import { z } from "zod";
 // D2: audio-секции (напр. Listening) требуют Web Speech воспроизведения
 // (этап Stage 2.5, D8) — absent модальность трактуется как "text" (обратная
 // совместимость со всеми старыми профилями).
-export const sectionModalitySchema = z.enum(["text", "audio"]);
+// D6 (Stage5 Task1): "speaking" — секции устной речи (напр. Speaking) грейдятся
+// аудио-в-LLM по рубрике (D4), не браузерным STT. Аддитивно — старые профили с
+// "text"/"audio"/absent парсятся байт-в-байт как раньше.
+export const sectionModalitySchema = z.enum(["text", "audio", "speaking"]);
 export type SectionModality = z.infer<typeof sectionModalitySchema>;
+
+// D6 (Stage5 Task1): опц. рубрика оценки устной части для modality="speaking"
+// секций. Критерии (key/label/maxPoints) — НЕ эталонный ответ, безопасны для
+// сериализации клиенту (Global Constraints: tasks.answer/explanation не
+// сериализуются, но criteria[] — не ответ, а шкала оценки). Каскад
+// источников (task.body → section.speakingCriteria → дженерик-рубрика) — в
+// скоупе Task 7/8, здесь только форма данных.
+export const speakingCriterionSchema = z.object({
+  key: z.string().min(1),
+  label: z.string().min(1),
+  maxPoints: z.number().positive(),
+});
+export type SpeakingCriterion = z.infer<typeof speakingCriterionSchema>;
 
 export const examSectionSchema = z.object({
   name: z.string().min(1),
@@ -13,6 +29,9 @@ export const examSectionSchema = z.object({
   taskTypes: z.array(z.string()).default([]),
   topics: z.array(z.string()).default([]),
   modality: sectionModalitySchema.nullish(), // absent = text
+  // D6 (Stage5 Task1): опционально — старые спеки/секции без критериев
+  // парсятся как раньше (undefined), ноль изменений в поведении.
+  speakingCriteria: z.array(speakingCriterionSchema).optional(),
 });
 export type ExamSection = z.infer<typeof examSectionSchema>;
 

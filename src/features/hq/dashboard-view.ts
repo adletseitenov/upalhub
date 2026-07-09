@@ -85,15 +85,21 @@ export function hasKnowledgeForActiveSections(
 /**
  * isHqStale — 🔴 красная команда: пересчёт НЕ запускается в GET-рендере.
  * Дашборд лишь решает, показывать ли <RecomputeKicker/> (клиентский
- * fire-and-forget POST). maxFinishedAt=null (ни одной завершённой попытки
- * этого hq вообще) -> никогда не stale — нечего пересчитывать, кикер не
- * должен долбить recompute на девственном штабе. Иначе: watermark
- * (last_recomputed_at) должен быть НЕ старше самой свежей завершённой
- * попытки; null-watermark (ни разу не пересчитывалось) считается stale.
+ * fire-and-forget POST). watermark (last_recomputed_at) должен быть НЕ
+ * старше самой свежей завершённой попытки; null-watermark (ни разу не
+ * пересчитывалось) считается stale БЕЗУСЛОВНО — даже при maxFinishedAt=null
+ * (ни одной завершённой попытки вообще).
+ *
+ * 🔴 D7 (Stage5 Task1, critical-фикс backstop): раньше maxFinishedAt=null
+ * коротило на `false` ДО проверки watermark — свежесозданный штаб с нулём
+ * попыток и last_recomputed_at=null (INSERT-recompute сам упал, см.
+ * study-hqs/route.ts) никогда не показывал кикер и оставался непересчитанным
+ * навсегда. lastRecomputedAt=null теперь всегда stale независимо от
+ * maxFinishedAt — кикер этот случай подхватывает.
  */
 export function isHqStale(maxFinishedAt: Date | null, lastRecomputedAt: Date | null): boolean {
-  if (maxFinishedAt === null) return false;
   if (lastRecomputedAt === null) return true;
+  if (maxFinishedAt === null) return false;
   return maxFinishedAt.getTime() > lastRecomputedAt.getTime();
 }
 

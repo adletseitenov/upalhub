@@ -218,9 +218,9 @@ describe("POST /api/study-hqs", () => {
     expect(await res.json()).toEqual({ id: "new-hq", existed: false });
     expect(captured.inserts).toHaveLength(1);
     expect(captured.inserts[0]).toEqual({ user_id: "user-1", exam_profile_id: PROFILE_ID });
-    // Task4 scope is the UPDATE-branch only (D7 point 3); a brand-new hq has
-    // no prior knowledge to recompute from.
-    expect(mockedRecompute).not.toHaveBeenCalled();
+    // 🔴 D7 (Stage5 Task1): INSERT-ветка тоже best-effort зовёт
+    // recomputeHqInsights now — see "recompute on INSERT" describe below.
+    expect(mockedRecompute).toHaveBeenCalledTimes(1);
   });
 
   it("existing hq + config only (examDate absent) -> update payload has config but no exam_date key", async () => {
@@ -483,5 +483,65 @@ describe("POST /api/study-hqs: recompute on UPDATE (D7)", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ id: HQ_ID, existed: true });
     expect(mockedRecompute).toHaveBeenCalledTimes(1);
+  });
+});
+
+// 🔴 D7 (Stage5 Task1, critical-фикс): INSERT-ветка (existed:false, брандNew
+// hq) тоже best-effort зовёт recomputeHqInsights — штаб рождается уже
+// пересчитанным (DEFAULT_APPROACH), не дожидаясь первой попытки/интервью.
+describe("POST /api/study-hqs: recompute on INSERT (D7 Stage5 Task1)", () => {
+  it("calls recomputeHqInsights with the newly created hq's id after a successful INSERT", async () => {
+    stubSupabase({
+      user: { id: "user-1" },
+      studyHqQueue: [
+        { data: null, error: null }, // find-existing: none
+        { data: { id: "new-hq" }, error: null }, // insert result
+      ],
+    });
+
+    const res = await POST(postRequest({ examProfileId: PROFILE_ID }));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: "new-hq", existed: false });
+    expect(mockedRecompute).toHaveBeenCalledTimes(1);
+    const [, args] = mockedRecompute.mock.calls[0];
+    expect(args.hqId).toBe("new-hq");
+    expect(args.now).toBeInstanceOf(Date);
+  });
+
+  it("swallows a recompute failure: the INSERT response is still 200 (best-effort, per D7)", async () => {
+    mockedRecompute.mockRejectedValue(new Error("recompute boom"));
+    stubSupabase({
+      user: { id: "user-1" },
+      studyHqQueue: [
+        { data: null, error: null },
+        { data: { id: "new-hq" }, error: null },
+      ],
+    });
+
+    const res = await POST(postRequest({ examProfileId: PROFILE_ID }));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: "new-hq", existed: false });
+    expect(mockedRecompute).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT call recomputeHqInsights when the insert races and loses (23505 -> existed:true)", async () => {
+    stubSupabase({
+      user: { id: "user-1" },
+      studyHqQueue: [
+        { data: null, error: null }, // find-existing: none (raced)
+        { data: null, error: { code: "23505" } }, // insert races and loses
+        { data: { id: "raced-hq" }, error: null }, // re-select finds the winner
+      ],
+    });
+
+    const res = await POST(postRequest({ examProfileId: PROFILE_ID }));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: "raced-hq", existed: true });
+    // The winning concurrent request already recomputed on its own INSERT
+    // path; this loser must not double-fire.
+    expect(mockedRecompute).not.toHaveBeenCalled();
   });
 });
